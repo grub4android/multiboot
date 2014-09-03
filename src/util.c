@@ -1,4 +1,4 @@
-#include "defs.h"
+#include <defs.h>
 
 #if defined(I386)
 #error "i386 NOT SUPPORTED"
