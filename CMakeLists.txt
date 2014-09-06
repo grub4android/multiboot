@@ -1,8 +1,19 @@
 cmake_minimum_required(VERSION 2.8)
 
+# common
 project(multiboot)
 set(CMAKE_BUILD_TYPE Release)
+set(CMAKE_C_FLAGS "-fPIC -static-libgcc -Wl,-static")
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include ${STRACE_BIN_DIR} ${STRACE_SRC_DIR})
-set(CMAKE_C_FLAGS "-static-libgcc -Wl,-static -DHAVE_CONFIG_H")
-add_library(multiboot SHARED src/util.c src/multiboot.c)
+# main
+add_executable(init src/multiboot_init.c)
+set_property(TARGET init PROPERTY INCLUDE_DIRECTORIES
+	${TRACY_SRC_DIR}
+	${TRACY_BIN_DIR}/include
+)
+
+# dependencies
+ADD_LIBRARY(tracy STATIC IMPORTED)
+SET_TARGET_PROPERTIES(tracy PROPERTIES
+    IMPORTED_LOCATION ${TRACY_BIN_DIR}/libtracy.a)
+TARGET_LINK_LIBRARIES(init tracy pthread)
