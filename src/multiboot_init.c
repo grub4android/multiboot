@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <stdbool.h>
+#include <errno.h>
 
 #include <lib/cmdline.h>
 #include <lib/fs_mgr.h>
@@ -23,8 +24,20 @@
 static char source_path[PATH_MAX];
 static int source_device = -1, source_partition = -1;
 static bool detach_all_children = false, is_recovery = false;
-static bool source_mounted = false;
+static bool multiboot_initialized = false;
+static bool enable_multiboot = false;
 static struct fstab *fstab;
+
+static void kperror(const char *message)
+{
+	const char *sep = ": ";
+	if (!message) {
+		sep = "";
+		message = "";
+	}
+
+	KLOG_ERROR(LOG_TAG, "%s%s%s", message, sep, strerror(errno));
+}
 
 static int run_init(struct tracy *tracy)
 {
@@ -43,7 +56,7 @@ static int run_init(struct tracy *tracy)
 
 	// error check
 	if (ret) {
-		perror("tracy_exec/execve");
+		kperror("tracy_exec/execve");
 		return EXIT_FAILURE;
 	}
 
@@ -65,9 +78,10 @@ static void import_kernel_nv(char *name)
 		if (sscanf
 		    (value, "(hd%d,%d)%s", &source_device, &source_partition,
 		     source_path) < 0) {
-			perror("scanf");
+			kperror("scanf");
 			return;
 		}
+		enable_multiboot = true;
 	}
 }
 
@@ -82,11 +96,20 @@ static void translate_fstab_paths(struct fstab *fstab)
 			fstab->recs[i].blk_device = strdup(devname_real);
 		}
 
-		stat(fstab->recs[i].blk_device, &fstab->recs[i].statbuf);
+		if (stat(fstab->recs[i].blk_device, &fstab->recs[i].statbuf) <
+		    0)
+			KLOG_ERROR(LOG_TAG, "%s: couldn't stat %s\n", __func__,
+				   fstab->recs[i].blk_device);
+		else {
+			dev_t dev = fstab->recs[i].statbuf.st_rdev;
+			KLOG_DEBUG(LOG_TAG, "%s: %s: major=%u minor=%u\n",
+				   __func__, fstab->recs[i].blk_device,
+				   major(dev), minor(dev));
+		}
 	}
 }
 
-static void init_multiboot_mounts(void)
+static void init_multiboot_environment(void)
 {
 	KLOG_INFO(LOG_TAG, "%s\n", __func__);
 
@@ -96,15 +119,23 @@ static void init_multiboot_mounts(void)
 	// parse cmdline
 	import_kernel_cmdline(import_kernel_nv);
 
-	// mount source fs
-	char device[PATH_MAX];
-	sprintf(device, "/dev/block/mmcblk%dp%d", source_device,
-		source_partition);
-	KLOG_INFO(LOG_TAG, "source_partition: %s\n", device);
-	mount(device, PATH_MOUNTPOINT_SOURCE, "ext4",
-	      MS_NOATIME | MS_NOEXEC | MS_NOSUID, NULL);
+	if (enable_multiboot) {
+		char buf[PATH_MAX];
 
-	source_mounted = true;
+		// mount source partition
+		sprintf(buf, "/dev/block/mmcblk%dp%d", source_device,
+			source_partition);
+		KLOG_INFO(LOG_TAG, "source_partition: %s\n", buf);
+		mount(buf, PATH_MOUNTPOINT_SOURCE, "ext4",
+		      MS_NOATIME | MS_NOEXEC | MS_NOSUID, NULL);
+
+		// create mb directories
+		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s", source_path);
+		KLOG_INFO(LOG_TAG, "source_path: %s\n", buf);
+		mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO);
+
+		multiboot_initialized = true;
+	}
 }
 
 static struct fstab_rec *get_fstab_rec(const char *devname)
@@ -115,13 +146,17 @@ static struct fstab_rec *get_fstab_rec(const char *devname)
 	bool use_stat = !stat(devname, &sb);
 
 	for (i = 0; i < fstab->num_entries; i++) {
-		if (use_stat && sb.st_dev == fstab->recs[i].statbuf.st_dev) {
+		if (use_stat && sb.st_rdev == fstab->recs[i].statbuf.st_rdev) {
+			KLOG_DEBUG(LOG_TAG, "%s: stat: %d\n", __func__, i);
 			return &fstab->recs[i];
 		}
-		if (!strcmp(devname, fstab->recs[i].blk_device))
+		if (!strcmp(devname, fstab->recs[i].blk_device)) {
+			KLOG_DEBUG(LOG_TAG, "%s: strcmp: %d\n", __func__, i);
 			return &fstab->recs[i];
+		}
 	}
 
+	KLOG_DEBUG(LOG_TAG, "%s: no match\n", __func__);
 	return NULL;
 }
 
@@ -133,18 +168,19 @@ int hook_mount(struct tracy_event *e)
 		struct fstab_rec *fstabrec;
 		tracy_child_addr_t devname_new;
 		char *devname, *mountpoint;
+		char buf[PATH_MAX];
 
 		// we need to wait for init
-		if (!source_mounted)
+		if (!multiboot_initialized)
 			return TRACY_HOOK_CONTINUE;
 
 		// get args
 		devname = get_patharg(e->child, e->args.a0, 1);
 		mountpoint = get_patharg(e->child, e->args.a1, 1);
 		unsigned long flags = (unsigned long)e->args.a3;
-		KLOG_INFO(LOG_TAG, "mount %s on %s remount=%d, ro=%d\n",
-			  devname, mountpoint, (flags & MS_REMOUNT),
-			  (flags & MS_RDONLY));
+		KLOG_DEBUG(LOG_TAG, "mount %s on %s remount=%d, ro=%d\n",
+			   devname, mountpoint, (flags & MS_REMOUNT),
+			   (flags & MS_RDONLY));
 
 		// detect booting android
 		if (!strcmp(mountpoint, "/") && (flags & MS_REMOUNT)
@@ -159,42 +195,54 @@ int hook_mount(struct tracy_event *e)
 			return TRACY_HOOK_CONTINUE;
 		}
 
-		KLOG_INFO(LOG_TAG, "handle mount %s on %s\n", devname,
+		KLOG_INFO(LOG_TAG, "hijack: mount %s on %s\n", devname,
 			  mountpoint);
 
-		/*
-		   // allocate memory for new devname
-		   if(tracy_mmap(e->child, &devname_new, NULL, strlen(PATH_MOUNTPOINT_SOURCE)+1,
-		   PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1,
-		   0) != 0) {
-		   perror("tracy_mmap");
-		   return TRACY_HOOK_ABORT;
-		   }
+		// create directory for bind mount
+		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s", source_path,
+			fstabrec->mount_point);
+		KLOG_INFO(LOG_TAG, "bind to %s\n", buf);
+		if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
+			kperror("mkpath");
+			exit(1);
+		}
+		// allocate memory for new devname
+		if (tracy_mmap(e->child, &devname_new, NULL, sizeof(buf),
+			       PROT_READ | PROT_WRITE,
+			       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != 0) {
+			kperror("tracy_mmap");
+			return TRACY_HOOK_ABORT;
+		}
+		// copy new devname
+		if (tracy_write_mem(e->child, devname_new, buf, sizeof(buf)) <
+		    0) {
+			kperror("tracy_write_mem");
+			return TRACY_HOOK_ABORT;
+		}
+		// copy args
+		memcpy(&a, &(e->args), sizeof(struct tracy_sc_args));
 
-		   // copy new devname
-		   if (tracy_write_mem(e->child, devname_new,
-		   (void*)PATH_MOUNTPOINT_SOURCE,
-		   strlen(PATH_MOUNTPOINT_SOURCE)+1) < 0) {
-		   perror("tracy_write_mem");
-		   return TRACY_HOOK_ABORT;
-		   }
+		// modify args
+		a.a0 = (unsigned)devname_new;
+		a.a2 = 0;
+		a.a3 |= MS_BIND;
 
-		   // copy args
-		   memcpy(&a, &(e->args), sizeof(struct tracy_sc_args));
-
-		   // modify args
-		   a.a0 = (unsigned)devname_new;
-		   a.a2 = 0;
-		   a.a3 |= MS_BIND;
-
-		   // write new args
-		   if (tracy_modify_syscall_args(e->child, a.syscall, &a)) {
-		   return TRACY_HOOK_ABORT;
-		   } */
+		// write new args
+		if (tracy_modify_syscall_args(e->child, a.syscall, &a)) {
+			return TRACY_HOOK_ABORT;
+		}
 	} else {
 		// initialize if not already done
-		if (!source_mounted && can_init()) {
-			init_multiboot_mounts();
+		if (!multiboot_initialized && can_init()) {
+			init_multiboot_environment();
+
+			// stop tracing if multiboot cmdline is invalid or wasn't found
+			if (!enable_multiboot) {
+				KLOG_INFO(LOG_TAG,
+					  "multiboot disabled. stop tracing!\n");
+				detach_all_children = true;
+				return TRACY_HOOK_DETACH_CHILD;
+			}
 		}
 	}
 
@@ -226,7 +274,7 @@ int main(int argc, char **argv)
 	}
 	// create mountpoint
 	if (mkpath(PATH_MOUNTPOINT_SOURCE, S_IRWXU | S_IRWXG | S_IRWXO)) {
-		perror("mkpath");
+		kperror("mkpath");
 		exit(1);
 	}
 	// identify recovery boot
@@ -243,7 +291,7 @@ int main(int argc, char **argv)
 	}
 	// run and trace /init
 	if (run_init(tracy)) {
-		perror("tracy_exec");
+		kperror("tracy_exec");
 		return EXIT_FAILURE;
 	}
 	// Main event-loop
