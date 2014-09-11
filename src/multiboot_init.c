@@ -165,7 +165,8 @@ static void init_multiboot_environment(void)
 			source_partition);
 		KLOG_INFO(LOG_TAG, "source_partition: %s\n", buf);
 		mount(buf, PATH_MOUNTPOINT_SOURCE, "ext4",
-		      MS_NOATIME | MS_NOEXEC | MS_NOSUID, NULL);
+		      MS_NOATIME | MS_NOEXEC | MS_NOSUID,
+		      "context=u:object_r:sdcard_external:s0");
 
 		// create mb directories
 		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s", source_path);
