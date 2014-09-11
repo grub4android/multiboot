@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <tracy.h>
 #include <linux/limits.h>
+#include <sys/mman.h>
 
 #define FILE_RECOVERY_BINARY "/sbin/recovery"
 
@@ -166,4 +167,37 @@ char *get_patharg(struct tracy_child *child, long addr, int real)
 			free(path_real);
 	} else
 		return strdup(path);
+}
+
+tracy_child_addr_t copy_patharg(struct tracy_child * child, const char *path)
+{
+	long ret;
+	static const int len = PATH_MAX + 1;
+	struct tracy_sc_args a;
+	tracy_child_addr_t path_new;
+
+	// allocate memory for new devname
+	if (tracy_mmap(child, &path_new, NULL, len,
+		       PROT_READ | PROT_WRITE,
+		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != 0) {
+		goto err;
+	}
+	// copy new devname
+	if (tracy_write_mem
+	    (child, path_new, (char *)path, (size_t) strlen(path) + 1) < 0) {
+		goto err_munmap;
+	}
+
+	return path_new;
+
+err_munmap:
+	tracy_munmap(child, &ret, path_new, len);
+err:
+	return NULL;
+}
+
+void free_patharg(struct tracy_child *child, tracy_child_addr_t addr)
+{
+	long ret;
+	tracy_munmap(child, &ret, addr, PATH_MAX + 1);
 }

@@ -20,6 +20,14 @@
 #define PATH_MOUNTPOINT_SOURCE "/multiboot/source"
 #define FILE_FSTAB "/multiboot/fstab"
 #define LOG_TAG "multiboot"
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
+
+struct redirect_info {
+	char *syscall_name;
+	int argnum;
+	bool resolve_symlinks;
+	int syscall_number;
+};
 
 static char source_path[PATH_MAX];
 static int source_device = -1, source_partition = -1;
@@ -27,6 +35,36 @@ static bool detach_all_children = false, is_recovery = false;
 static bool multiboot_initialized = false;
 static bool enable_multiboot = false;
 static struct fstab *fstab;
+static struct redirect_info info[] = {
+	{"stat", 0, 1},
+	{"lstat", 0, 0},
+	{"newstat", 0, 1},
+	{"newlstat", 0, 0},
+	{"stat64", 0, 1},
+	{"lstat64", 0, 0},
+	//{"chroot", 0, 0},
+	//{"mknod", 0, 0},
+	{"chmod", 0, 0},
+	{"open", 0, 1},
+	{"access", 0, 0},
+	{"chown", 0, 1},
+	{"lchown", 0, 0},
+	{"chown16", 0, 1},
+	{"lchown16", 0, 0},
+	{"utime", 0, 0},
+	{"utimes", 0, 0},
+	//{"chdir", 0, 0},
+	{"mknodat", 1, 0},
+	{"futimesat", 1, 0},
+	{"faccessat", 1, 0},
+	{"fchmodat", 1, 0},
+	{"fchownat", 1, 0},
+	{"openat", 1, 0},
+	{"newfstatat", 1, 1},
+	{"fstatat64", 1, 1},
+	{"utimensat", 1, 0},
+	{"execve", 0, 0},
+};
 
 static void kperror(const char *message)
 {
@@ -163,16 +201,16 @@ static struct fstab_rec *get_fstab_rec(const char *devname)
 int hook_mount(struct tracy_event *e)
 {
 	struct tracy_sc_args a;
+	struct fstab_rec *fstabrec;
+	tracy_child_addr_t devname_new = NULL;
+	char *devname = NULL, *mountpoint = NULL;
+	char buf[PATH_MAX];
+	int rc = TRACY_HOOK_CONTINUE;
 
 	if (e->child->pre_syscall) {
-		struct fstab_rec *fstabrec;
-		tracy_child_addr_t devname_new;
-		char *devname, *mountpoint;
-		char buf[PATH_MAX];
-
 		// we need to wait for init
 		if (!multiboot_initialized)
-			return TRACY_HOOK_CONTINUE;
+			goto out;
 
 		// get args
 		devname = get_patharg(e->child, e->args.a0, 1);
@@ -187,12 +225,13 @@ int hook_mount(struct tracy_event *e)
 		    && (flags & MS_RDONLY)) {
 			KLOG_INFO(LOG_TAG, "mount rootfs RO. stop tracing!\n");
 			detach_all_children = true;
-			return TRACY_HOOK_DETACH_CHILD;
+			rc = TRACY_HOOK_DETACH_CHILD;
+			goto out;
 		}
 		// check if we need to redirect this partition
 		fstabrec = get_fstab_rec(devname);
 		if (!fstabrec) {
-			return TRACY_HOOK_CONTINUE;
+			goto out;
 		}
 
 		KLOG_INFO(LOG_TAG, "hijack: mount %s on %s\n", devname,
@@ -204,34 +243,39 @@ int hook_mount(struct tracy_event *e)
 		KLOG_INFO(LOG_TAG, "bind to %s\n", buf);
 		if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
 			kperror("mkpath");
-			exit(1);
-		}
-		// allocate memory for new devname
-		if (tracy_mmap(e->child, &devname_new, NULL, sizeof(buf),
-			       PROT_READ | PROT_WRITE,
-			       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != 0) {
-			kperror("tracy_mmap");
-			return TRACY_HOOK_ABORT;
+			rc = TRACY_HOOK_ABORT;
+			goto out;
 		}
 		// copy new devname
-		if (tracy_write_mem(e->child, devname_new, buf, sizeof(buf)) <
-		    0) {
-			kperror("tracy_write_mem");
-			return TRACY_HOOK_ABORT;
+		devname_new = copy_patharg(e->child, buf);
+		if (!devname_new) {
+			kperror("copy_patharg");
+			rc = TRACY_HOOK_ABORT;
+			goto out;
 		}
 		// copy args
 		memcpy(&a, &(e->args), sizeof(struct tracy_sc_args));
 
 		// modify args
-		a.a0 = (unsigned)devname_new;
+		a.a0 = (long)devname_new;
 		a.a2 = 0;
 		a.a3 |= MS_BIND;
 
 		// write new args
 		if (tracy_modify_syscall_args(e->child, a.syscall, &a)) {
-			return TRACY_HOOK_ABORT;
+			kperror("tracy_modify_syscall_args");
+			rc = TRACY_HOOK_ABORT;
+			goto out;
 		}
+		// set devname so we can free it later
+		e->child->custom = (void *)devname_new;
 	} else {
+		// free previous data
+		if (e->child->custom) {
+			free_patharg(e->child,
+				     (tracy_child_addr_t) e->child->custom);
+			e->child->custom = NULL;
+		}
 		// initialize if not already done
 		if (!multiboot_initialized && can_init()) {
 			init_multiboot_environment();
@@ -241,12 +285,95 @@ int hook_mount(struct tracy_event *e)
 				KLOG_INFO(LOG_TAG,
 					  "multiboot disabled. stop tracing!\n");
 				detach_all_children = true;
-				return TRACY_HOOK_DETACH_CHILD;
+				rc = TRACY_HOOK_DETACH_CHILD;
+				goto out;
 			}
 		}
 	}
 
-	return TRACY_HOOK_CONTINUE;
+out:
+	if (devname)
+		free(devname);
+	if (mountpoint)
+		free(mountpoint);
+	if (devname_new && rc)
+		free_patharg(e->child, devname_new);
+
+	return rc;
+}
+
+int redirect_file_access(struct tracy_event *e, int argpos,
+			 bool resolve_symlinks)
+{
+	struct tracy_sc_args a;
+	int rc = TRACY_HOOK_CONTINUE;
+	char *path = NULL;
+	tracy_child_addr_t devname_new;
+	struct fstab_rec *fstabrec;
+	long *argptr;
+
+	if (e->child->pre_syscall) {
+		// we need to wait for init
+		if (!multiboot_initialized)
+			goto out;
+
+		// get path
+		argptr = &e->args.a0;
+		path = get_patharg(e->child, argptr[argpos], resolve_symlinks);
+
+		// check if we need to redirect this partition
+		fstabrec = get_fstab_rec(path);
+		if (!fstabrec) {
+			goto out;
+		}
+		// ignore symlinks for calls which don't resolve them
+		struct stat sb;
+		if (!resolve_symlinks && !lstat(path, &sb)
+		    && S_ISLNK(sb.st_mode)) {
+			goto out;
+		}
+
+		KLOG_INFO(LOG_TAG, "%s(%s): redirect %s arg=%d\n", __func__,
+			   get_syscall_name_abi(e->syscall_num, e->abi), path,
+			   argpos);
+
+		// copy new devname
+		devname_new = copy_patharg(e->child, "/dev/null");
+		if (!devname_new) {
+			kperror("copy_patharg");
+			rc = TRACY_HOOK_ABORT;
+			goto out;
+		}
+		// copy args
+		memcpy(&a, &(e->args), sizeof(struct tracy_sc_args));
+
+		// modify args
+		argptr = &a.a0;
+		argptr[argpos] = (long)devname_new;
+
+		// write new args
+		if (tracy_modify_syscall_args(e->child, a.syscall, &a)) {
+			kperror("tracy_modify_syscall_args");
+			rc = TRACY_HOOK_ABORT;
+			goto out;
+		}
+		// set devname so we can free it later
+		e->child->custom = (void *)devname_new;;
+	} else {
+		// free previous data
+		if (e->child->custom) {
+			free_patharg(e->child,
+				     (tracy_child_addr_t) e->child->custom);
+			e->child->custom = NULL;
+		}
+	}
+
+out:
+	if (path)
+		free(path);
+	if (devname_new && rc)
+		free_patharg(e->child, devname_new);
+	return rc;
 }
 
 int sig_hook(struct tracy_event *e)
@@ -257,9 +384,24 @@ int sig_hook(struct tracy_event *e)
 	return TRACY_HOOK_CONTINUE;
 }
 
+int hook_fileaccess(struct tracy_event *e)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(info); i++) {
+		if (info[i].syscall_number == e->syscall_num) {
+			return redirect_file_access(e, info[i].argnum,
+						    info[i].resolve_symlinks);
+		}
+	}
+
+	return TRACY_HOOK_ABORT;
+}
+
 int main(int argc, char **argv)
 {
 	struct tracy *tracy;
+	int i;
 
 	// init klog
 	klog_init();
@@ -289,6 +431,19 @@ int main(int argc, char **argv)
 		KLOG_ERROR(LOG_TAG, "Could not hook mount\n");
 		return EXIT_FAILURE;
 	}
+	// hooks for file access redirection
+	for (i = 0; i < ARRAY_SIZE(info); i++) {
+		info[i].syscall_number =
+		    get_syscall_number_abi(info[i].syscall_name,
+					   TRACY_ABI_NATIVE);
+		if (tracy_set_hook
+		    (tracy, info[i].syscall_name, TRACY_ABI_NATIVE,
+		     hook_fileaccess)) {
+			KLOG_ERROR(LOG_TAG, "Could not hook mount\n");
+			return EXIT_FAILURE;
+		}
+	}
+
 	// run and trace /init
 	if (run_init(tracy)) {
 		kperror("tracy_exec");
