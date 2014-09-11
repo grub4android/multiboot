@@ -63,7 +63,7 @@ static struct redirect_info info[] = {
 	{"newfstatat", 1, 1},
 	{"fstatat64", 1, 1},
 	{"utimensat", 1, 0},
-	{"execve", 0, 0},
+	//{"execve", 0, 0},
 };
 
 static void kperror(const char *message)
@@ -334,8 +334,8 @@ int redirect_file_access(struct tracy_event *e, int argpos,
 		}
 
 		KLOG_INFO(LOG_TAG, "%s(%s): redirect %s arg=%d\n", __func__,
-			   get_syscall_name_abi(e->syscall_num, e->abi), path,
-			   argpos);
+			  get_syscall_name_abi(e->syscall_num, e->abi), path,
+			  argpos);
 
 		// copy new devname
 		devname_new = copy_patharg(e->child, "/dev/null");
@@ -358,7 +358,7 @@ int redirect_file_access(struct tracy_event *e, int argpos,
 			goto out;
 		}
 		// set devname so we can free it later
-		e->child->custom = (void *)devname_new;;
+		e->child->custom = (void *)devname_new;
 	} else {
 		// free previous data
 		if (e->child->custom) {
@@ -439,7 +439,8 @@ int main(int argc, char **argv)
 		if (tracy_set_hook
 		    (tracy, info[i].syscall_name, TRACY_ABI_NATIVE,
 		     hook_fileaccess)) {
-			KLOG_ERROR(LOG_TAG, "Could not hook mount\n");
+			KLOG_ERROR(LOG_TAG, "Could not hook %s\n",
+				   info[i].syscall_name);
 			return EXIT_FAILURE;
 		}
 	}
