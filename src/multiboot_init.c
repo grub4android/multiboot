@@ -167,6 +167,7 @@ static void init_multiboot_environment(void)
 		sprintf(buf, "/dev/block/mmcblk%dp%d", source_device,
 			source_partition);
 		KLOG_INFO(LOG_TAG, "source_partition: %s\n", buf);
+		check_fs(buf, "ext4", PATH_MOUNTPOINT_SOURCE);
 		mount(buf, PATH_MOUNTPOINT_SOURCE, "ext4",
 		      0, "context=u:object_r:sdcard_external:s0");
 
