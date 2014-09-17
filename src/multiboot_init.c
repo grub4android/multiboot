@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include <lib/cmdline.h>
 #include <lib/fs_mgr.h>
@@ -22,6 +23,9 @@
 #define FILE_FSTAB "/multiboot/fstab"
 #define LOG_TAG "multiboot"
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
+
+#define FSTAB_PREFIX "fstab."
+#define FSTAB_RECOVERY "/etc/recovery.fstab"
 
 struct redirect_info {
 	char *syscall_name;
@@ -158,9 +162,6 @@ static void init_multiboot_environment(void)
 
 	// resolve symlinks in fstab paths
 	translate_fstab_paths(fstab);
-
-	// parse cmdline
-	import_kernel_cmdline(import_kernel_nv);
 
 	if (enable_multiboot) {
 		// mount source partition
@@ -446,12 +447,86 @@ int hook_fileaccess(struct tracy_event *e)
 	return TRACY_HOOK_ABORT;
 }
 
-int main(int __attribute__ ((unused)) argc, char
-	 __attribute__ ((unused)) ** argv)
+static void find_fstab(int (*callback) (const char *))
 {
-	struct tracy *tracy;
-	unsigned int i;
+	struct stat sb;
 
+	// hardcoded paths
+	if (!stat(FSTAB_RECOVERY, &sb)) {
+		if (callback(FSTAB_RECOVERY))
+			return;
+	}
+	// find fstabs in root dir
+	DIR *d = opendir("/");
+	if (!d) {
+		KLOG_ERROR("Failed to open /\n");
+		return;
+	}
+
+	struct dirent *dt;
+	while ((dt = readdir(d))) {
+		if (dt->d_type != DT_REG)
+			continue;
+
+		if (!strcmp(dt->d_name, "fstab.goldfish"))
+			continue;
+
+		if (strncmp(dt->d_name, FSTAB_PREFIX, sizeof(FSTAB_PREFIX) - 1)
+		    == 0) {
+			if (callback(dt->d_name))
+				return;
+		}
+	}
+
+	closedir(d);
+}
+
+int patch_fstab(const char *path)
+{
+	KLOG_ERROR(LOG_TAG, "%s: %s\n", __func__, path);
+	int i, j;
+
+	// parse original fstab
+	struct fstab *fstab_orig = fs_mgr_read_fstab(path);
+
+	// open fstab for writing
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		KLOG_ERROR(LOG_TAG, "Error opening fstab!\n");
+		goto out_free_fstab;
+	}
+	// write new fstab
+	for (i = 0; i < fstab_orig->num_entries; i++) {
+		const char *blk_device = fstab_orig->recs[i].blk_device;
+		const char *mount_point = fstab_orig->recs[i].mount_point;
+		const char *fs_type = fstab_orig->recs[i].fs_type;
+		const char *fs_options =
+		    fstab_orig->recs[i].fs_options_unparsed;
+		const char *fs_mgr_flags =
+		    fstab_orig->recs[i].fs_mgr_flags_unparsed;
+
+		// patch!
+		for (j = 0; j < fstab->num_entries; j++) {
+			if (!strcmp(mount_point, fstab->recs[j].mount_point)) {
+				fs_type = "multiboot";
+			}
+		}
+
+		// write new entry
+		fprintf(f, "%s %s %s %s %s\n", blk_device, mount_point, fs_type,
+			fs_options, fs_mgr_flags);
+	}
+
+// cleanup
+	fclose(f);
+out_free_fstab:
+	fs_mgr_free_fstab(fstab_orig);
+
+	return 0;
+}
+
+static void early_init(void)
+{
 	// init klog
 	klog_init();
 	klog_set_level(6);
@@ -470,6 +545,30 @@ int main(int __attribute__ ((unused)) argc, char
 	}
 	// identify recovery boot
 	is_recovery = system_is_recovery();
+
+	// mount procfs
+	mkdir("/proc", 0755);
+	mount("proc", "/proc", "proc", 0, NULL);
+
+	// parse cmdline
+	import_kernel_cmdline(import_kernel_nv);
+
+	// prepare fstab
+	if (enable_multiboot) {
+		find_fstab(&patch_fstab);
+	}
+	// unmount procfs
+	umount("/proc");
+}
+
+int main(int __attribute__ ((unused)) argc, char
+	 __attribute__ ((unused)) ** argv)
+{
+	struct tracy *tracy;
+	unsigned int i;
+
+	// early init
+	early_init();
 
 	// tracy init
 	tracy = tracy_init(TRACY_TRACE_CHILDREN | TRACY_MEMORY_FALLBACK);
