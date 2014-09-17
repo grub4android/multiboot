@@ -340,3 +340,20 @@ int set_loop(char *device, char *file, int ro)
 
 	return do_exec(par);
 }
+
+int copy_file(char *source, char *target)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = "/multiboot/busybox";
+	par[i++] = "cp";
+	par[i++] = source;
+	par[i++] = target;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
