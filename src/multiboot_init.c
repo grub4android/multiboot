@@ -26,6 +26,7 @@
 
 #define FSTAB_PREFIX "fstab."
 #define FSTAB_RECOVERY "/etc/recovery.fstab"
+#define FS_OPTION_REMOUNT "remount,"
 
 struct redirect_info {
 	char *syscall_name;
@@ -179,18 +180,14 @@ static void init_multiboot_environment(void)
 
 		// setup filesystem
 		for (i = 0; i < fstab->num_entries; i++) {
-			if (!strcmp(fstab->recs[i].fs_type, "ext4")) {
+			if (fstab->recs[i].replacement_bind) {
 				// create directory
-				sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s",
-					source_path,
-					fstab->recs[i].mount_point);
-				if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
+				if (mkpath
+				    (fstab->recs[i].replacement_device,
+				     S_IRWXU | S_IRWXG | S_IRWXO)) {
 					kperror("mkpath");
 					continue;
 				}
-				// set bind directory as device
-				fstab->recs[i].replacement_device = strdup(buf);
-				fstab->recs[i].replacement_bind = 1;
 			}
 
 			else {
@@ -205,24 +202,17 @@ static void init_multiboot_environment(void)
 						continue;
 					}
 				}
-				// create file backup
-				char *file = strdup(buf);
-
 				// create device node
-				sprintf(buf, "/dev/block/loop%d", 255 - i);
-				mknod(buf, fstab->recs[i].statbuf.st_mode,
-				      makedev(7, 255 - i));
+				mknod(fstab->recs[i].replacement_device,
+				      fstab->recs[i].statbuf.st_mode, makedev(7,
+									      255
+									      -
+									      i));
 
 				// setup loop
-				if (set_loop(buf, file, 0))
+				if (set_loop
+				    (fstab->recs[i].replacement_device, buf, 0))
 					kperror("set_loop");
-
-				// set loop dev as device
-				fstab->recs[i].replacement_device = strdup(buf);
-				fstab->recs[i].replacement_bind = 0;
-
-				// cleanup
-				free(file);
 			}
 		}
 
@@ -273,14 +263,6 @@ int hook_mount(struct tracy_event *e)
 			   devname, mountpoint, (flags & MS_REMOUNT),
 			   (flags & MS_RDONLY));
 
-		// detect booting android
-		if (!strcmp(mountpoint, "/") && (flags & MS_REMOUNT)
-		    && (flags & MS_RDONLY)) {
-			KLOG_INFO(LOG_TAG, "mount rootfs RO. stop tracing!\n");
-			detach_all_children = true;
-			rc = TRACY_HOOK_DETACH_CHILD;
-			goto out;
-		}
 		// check if we need to redirect this partition
 		fstabrec = get_fstab_rec(devname);
 		if (!fstabrec) {
@@ -326,10 +308,10 @@ int hook_mount(struct tracy_event *e)
 		if (!multiboot_initialized && can_init()) {
 			init_multiboot_environment();
 
-			// stop tracing if multiboot cmdline is invalid or wasn't found
-			if (!enable_multiboot) {
+			// stop tracing if we're about to boot android
+			if (!is_recovery) {
 				KLOG_INFO(LOG_TAG,
-					  "multiboot disabled. stop tracing!\n");
+					  "android boot. stop tracing!\n");
 				detach_all_children = true;
 				rc = TRACY_HOOK_DETACH_CHILD;
 				goto out;
@@ -354,7 +336,7 @@ int redirect_file_access(struct tracy_event *e, int argpos,
 	struct tracy_sc_args a;
 	int rc = TRACY_HOOK_CONTINUE;
 	char *path = NULL;
-	tracy_child_addr_t devname_new;
+	tracy_child_addr_t devname_new = NULL;
 	struct fstab_rec *fstabrec;
 	long *argptr;
 
@@ -505,18 +487,59 @@ int patch_fstab(const char *path)
 		const char *fs_mgr_flags =
 		    fstab_orig->recs[i].fs_mgr_flags_unparsed;
 
-		// patch!
+		// lookup partition is replacement fstab
+		bool use_bind = false;
 		for (j = 0; j < fstab->num_entries; j++) {
-			if (!strcmp(mount_point, fstab->recs[j].mount_point)) {
-				fs_type = "multiboot";
+			if (strcmp(mount_point, fstab->recs[j].mount_point))
+				continue;
+
+			// bind mount
+			if (fstab->recs[j].replacement_bind) {
+				if (!is_recovery) {
+					// set new args
+					blk_device =
+					    fstab->recs[j].replacement_device;
+					fs_options = "bind";
+
+					use_bind = true;
+				} else {
+					// to fix format in recovery
+					fs_type = "multiboot";
+				}
 			}
+			// fsimage mount
+			else if (!is_recovery) {
+				blk_device = fstab->recs[j].replacement_device;
+			}
+
+			break;
 		}
 
 		// write new entry
 		fprintf(f, "%s %s %s %s %s\n", blk_device, mount_point, fs_type,
 			fs_options, fs_mgr_flags);
-	}
 
+		// we need a remount for bind mounts to set the flags
+		if (use_bind && strcmp(mount_point, "/system")) {
+			const char *fs_options =
+			    fstab_orig->recs[i].fs_options_unparsed;
+			char *new_fs_options = NULL;
+
+			// create remount options
+			new_fs_options =
+			    malloc(strlen(FS_OPTION_REMOUNT) +
+				   strlen(fs_options) + 1);
+			sprintf(new_fs_options, "%s%s", FS_OPTION_REMOUNT,
+				fs_options);
+
+			// add remount entry
+			fprintf(f, "%s %s %s %s %s\n", blk_device, mount_point,
+				fs_type, new_fs_options, "wait");
+
+			// cleanup
+			free(new_fs_options);
+		}
+	}
 // cleanup
 	fclose(f);
 out_free_fstab:
@@ -527,6 +550,9 @@ out_free_fstab:
 
 static void early_init(void)
 {
+	int i;
+	char buf[PATH_MAX];
+
 	// init klog
 	klog_init();
 	klog_set_level(6);
@@ -553,9 +579,41 @@ static void early_init(void)
 	// parse cmdline
 	import_kernel_cmdline(import_kernel_nv);
 
-	// prepare fstab
 	if (enable_multiboot) {
+		// get replacement info
+		for (i = 0; i < fstab->num_entries; i++) {
+
+			// bind mount
+			if (!strcmp(fstab->recs[i].fs_type, "ext4")) {
+				// get directory
+				sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s",
+					source_path,
+					fstab->recs[i].mount_point);
+
+				// set bind directory as device
+				fstab->recs[i].replacement_device = strdup(buf);
+				fstab->recs[i].replacement_bind = 1;
+			}
+			// fsimage mount
+			else {
+				// get device node
+				sprintf(buf, "/dev/block/loop%d", 255 - i);
+
+				// set loop dev as device
+				fstab->recs[i].replacement_device = strdup(buf);
+				fstab->recs[i].replacement_bind = 0;
+			}
+		}
+
+		// prepare fstab
 		find_fstab(&patch_fstab);
+
+		// disable aries' dualboot init
+		if (!is_recovery) {
+			if (!unlink("/sbin/dualboot_init"))
+				copy_file("/fstab.aries",
+					  "/fstab.aries.patched");
+		}
 	}
 	// unmount procfs
 	umount("/proc");
@@ -570,6 +628,14 @@ int main(int __attribute__ ((unused)) argc, char
 	// early init
 	early_init();
 
+	if (!enable_multiboot) {
+		KLOG_INFO(LOG_TAG, "multiboot disabled. don't trace!\n");
+		if (run_init(NULL)) {
+			kperror("run_init");
+			return EXIT_FAILURE;
+		}
+		return 0;
+	}
 	// tracy init
 	tracy = tracy_init(TRACY_TRACE_CHILDREN | TRACY_MEMORY_FALLBACK);
 	tracy_set_signal_hook(tracy, sig_hook);
