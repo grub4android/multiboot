@@ -36,6 +36,8 @@
 
 #include "fs_mgr_priv.h"
 
+#define E2FSCK_BIN      "/multiboot/e2fsck"
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 
 struct flag_list {
@@ -365,6 +367,54 @@ void fs_mgr_free_fstab(struct fstab *fstab)
 
 	/* Free fstab */
 	free(fstab);
+}
+
+void check_fs(char *blk_device, char *fs_type, char *target)
+{
+	int ret;
+	long tmpmnt_flags = MS_NOATIME | MS_NOEXEC | MS_NOSUID;
+	char *tmpmnt_opts = "nomblk_io_submit,errors=remount-ro";
+	char *e2fsck_argv[] = {
+		E2FSCK_BIN,
+		"-y",
+		blk_device,
+		NULL
+	};
+
+	/* Check for the types of filesystems we know how to check */
+	if (!strcmp(fs_type, "ext2") || !strcmp(fs_type, "ext3")
+	    || !strcmp(fs_type, "ext4")) {
+		/*
+		 * First try to mount and unmount the filesystem.  We do this because
+		 * the kernel is more efficient than e2fsck in running the journal and
+		 * processing orphaned inodes, and on at least one device with a
+		 * performance issue in the emmc firmware, it can take e2fsck 2.5 minutes
+		 * to do what the kernel does in about a second.
+		 *
+		 * After mounting and unmounting the filesystem, run e2fsck, and if an
+		 * error is recorded in the filesystem superblock, e2fsck will do a full
+		 * check.  Otherwise, it does nothing.  If the kernel cannot mount the
+		 * filesytsem due to an error, e2fsck is still run to do a full check
+		 * fix the filesystem.
+		 */
+		ret =
+		    mount(blk_device, target, fs_type, tmpmnt_flags,
+			  tmpmnt_opts);
+		if (!ret) {
+			umount(target);
+		}
+
+		INFO("Running %s on %s\n", E2FSCK_BIN, blk_device);
+
+		ret = do_exec(e2fsck_argv);
+
+		if (ret) {
+			/* No need to check for error in fork, we can't really handle it now */
+			ERROR("Failed trying to run %s\n", E2FSCK_BIN);
+		}
+	}
+
+	return;
 }
 
 /*

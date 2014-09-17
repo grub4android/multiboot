@@ -60,6 +60,7 @@ extern "C" {
 
 	struct fstab *fs_mgr_read_fstab(const char *fstab_path);
 	void fs_mgr_free_fstab(struct fstab *fstab);
+	void check_fs(char *blk_device, char *fs_type, char *target);
 	int fs_mgr_get_crypt_info(struct fstab *fstab, char *key_loc,
 				  char *real_blk_device, int size);
 	int fs_mgr_add_entry(struct fstab *fstab,
