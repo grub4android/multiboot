@@ -257,14 +257,13 @@ static unsigned long get_blknum(const char *path)
 	return numblocks;
 }
 
-static int do_exec(char **args)
+int do_exec(char **args)
 {
 	pid_t pid;
-	int status;
+	int status = 0;
 
 	pid = fork();
 	if (!pid) {
-
 		execve(args[0], args, NULL);
 		exit(0);
 	} else {
