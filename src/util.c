@@ -267,7 +267,7 @@ int do_exec(char **args)
 		execve(args[0], args, NULL);
 		exit(0);
 	} else {
-		while (wait(&status) != pid) ;
+		waitpid(pid, &status, 0);
 	}
 
 	return status;
