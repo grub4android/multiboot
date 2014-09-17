@@ -34,6 +34,8 @@ extern "C" {
 		char *blk_device;
 		char *mount_point;
 		char *fs_type;
+		char *fs_options_unparsed;
+		char *fs_mgr_flags_unparsed;
 		unsigned long flags;
 		char *fs_options;
 		int fs_mgr_flags;
