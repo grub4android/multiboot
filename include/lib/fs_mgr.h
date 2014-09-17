@@ -52,6 +52,8 @@ extern "C" {
 
 		// multiboot
 		struct stat statbuf;
+		char *replacement_device;
+		int replacement_bind;
 
 		char *lun;
 	};

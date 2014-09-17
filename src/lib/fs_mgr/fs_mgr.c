@@ -29,6 +29,7 @@
 #include <time.h>
 #include <sys/swap.h>
 #include <stdbool.h>
+#include <util.h>
 
 #include <linux/loop.h>
 #include <linux/capability.h>
@@ -194,7 +195,6 @@ static int parse_flags(char *flags, struct flag_list *fl,
 		p = strtok_r(NULL, ",", &savep);
 	}
 
-out:
 	if (fs_options && fs_options[0]) {
 		/* remove the last trailing comma from the list of options */
 		fs_options[strlen(fs_options) - 1] = '\0';
@@ -213,7 +213,6 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
 	const char *delim = " \t";
 	char *save_ptr, *p;
 	struct fstab *fstab = NULL;
-	struct fstab_rec *recs;
 	struct fs_mgr_flag_values flag_vals;
 #define FS_OPTIONS_LEN 1024
 	char tmp_fs_options[FS_OPTIONS_LEN];
@@ -368,54 +367,6 @@ void fs_mgr_free_fstab(struct fstab *fstab)
 	free(fstab);
 }
 
-static void remove_trailing_slashes(char *n)
-{
-	int len;
-
-	len = strlen(n) - 1;
-	while ((*(n + len) == '/') && len) {
-		*(n + len) = '\0';
-		len--;
-	}
-}
-
-/*
- * Mark the given block device as read-only, using the BLKROSET ioctl.
- * Return 0 on success, and -1 on error.
- */
-static void fs_set_blk_ro(const char *blockdev)
-{
-	int fd;
-	int ON = 1;
-
-	fd = open(blockdev, O_RDONLY);
-	if (fd < 0) {
-		// should never happen
-		return;
-	}
-
-	ioctl(fd, BLKROSET, &ON);
-	close(fd);
-}
-
-/*
- * __mount(): wrapper around the mount() system call which also
- * sets the underlying block device to read-only if the mount is read-only.
- * See "man 2 mount" for return values.
- */
-static int __mount(const char *source, const char *target,
-		   const char *filesystemtype, unsigned long mountflags,
-		   const void *data)
-{
-	int ret = mount(source, target, filesystemtype, mountflags, data);
-
-	if ((ret == 0) && (mountflags & MS_RDONLY) != 0) {
-		fs_set_blk_ro(source);
-	}
-
-	return ret;
-}
-
 /*
  * key_loc must be at least PROPERTY_VALUE_MAX bytes long
  *
@@ -464,7 +415,8 @@ int fs_mgr_get_crypt_info(struct fstab *fstab, char *key_loc,
 /* Add an entry to the fstab, and return 0 on success or -1 on error */
 int fs_mgr_add_entry(struct fstab *fstab,
 		     const char *mount_point, const char *fs_type,
-		     const char *blk_device, long long length)
+		     const char *blk_device, long long
+		     __attribute__ ((unused)) length)
 {
 	struct fstab_rec *new_fstab_recs;
 	int n = fstab->num_entries;

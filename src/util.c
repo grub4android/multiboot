@@ -9,8 +9,37 @@
 #include <tracy.h>
 #include <linux/limits.h>
 #include <sys/mman.h>
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <lib/klog.h>
 
 #define FILE_RECOVERY_BINARY "/sbin/recovery"
+#define LOG_TAG "multiboot-util"
+
+static const size_t block_size = 512;
+
+/*
+ * Source: http://stackoverflow.com/questions/15545341/process-name-from-its-pid-in-linux
+ */
+char *get_process_name_by_pid(const int pid)
+{
+	char *name = (char *)calloc(1024, sizeof(char));
+	if (name) {
+		sprintf(name, "/proc/%d/cmdline", pid);
+		FILE *f = fopen(name, "r");
+		if (f) {
+			size_t size;
+			size = fread(name, sizeof(char), 1024, f);
+			if (size > 0) {
+				if ('\n' == name[size - 1])
+					name[size - 1] = '\0';
+			}
+			fclose(f);
+		}
+	}
+	return name;
+}
 
 /* 
  * Function with behaviour like `mkdir -p'
@@ -165,34 +194,44 @@ char *get_patharg(struct tracy_child *child, long addr, int real)
 			return path_real;
 		else
 			free(path_real);
-	} else
+	} else {
 		return strdup(path);
+	}
+
+	KLOG_ERROR(LOG_TAG, "%s: Error getting patharg!\n", __func__);
+	return NULL;
 }
 
 tracy_child_addr_t copy_patharg(struct tracy_child * child, const char *path)
 {
-	long ret;
-	static const int len = PATH_MAX + 1;
-	struct tracy_sc_args a;
-	tracy_child_addr_t path_new;
+	long rc;
+	int len = strlen(path) + 1;
+	tracy_child_addr_t path_new = NULL;
 
+	if (len > PATH_MAX + 1) {
+		KLOG_ERROR(LOG_TAG, "%s: path is too long!\n", __func__);
+		goto err;
+	}
 	// allocate memory for new devname
-	if (tracy_mmap(child, &path_new, NULL, len,
-		       PROT_READ | PROT_WRITE,
-		       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) != 0) {
+	rc = tracy_mmap(child, &path_new, NULL, PATH_MAX + 1,
+			PROT_READ | PROT_WRITE,
+			MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (rc < 0 || !path_new) {
 		goto err;
 	}
 	// copy new devname
-	if (tracy_write_mem
-	    (child, path_new, (char *)path, (size_t) strlen(path) + 1) < 0) {
+	rc = tracy_write_mem(child, path_new, (char *)path,
+			     (size_t) strlen(path) + 1);
+	if (rc < 0) {
 		goto err_munmap;
 	}
 
 	return path_new;
 
 err_munmap:
-	tracy_munmap(child, &ret, path_new, len);
+	tracy_munmap(child, &rc, path_new, len);
 err:
+	KLOG_ERROR(LOG_TAG, "%s: Error copying patharg!\n", __func__);
 	return NULL;
 }
 
@@ -200,4 +239,105 @@ void free_patharg(struct tracy_child *child, tracy_child_addr_t addr)
 {
 	long ret;
 	tracy_munmap(child, &ret, addr, PATH_MAX + 1);
+}
+
+static unsigned long get_blknum(const char *path)
+{
+	int fd;
+	unsigned long numblocks = 0;
+
+	fd = open(path, O_RDONLY);
+	if (!fd)
+		return 0;
+
+	if (ioctl(fd, BLKGETSIZE, &numblocks) == -1)
+		return 0;
+
+	close(fd);
+	return numblocks;
+}
+
+static int do_exec(char **args)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (!pid) {
+
+		execve(args[0], args, NULL);
+		exit(0);
+	} else {
+		while (wait(&status) != pid) ;
+	}
+
+	return status;
+}
+
+int createRawImage(const char *source, const char *target)
+{
+	unsigned long numblocks = get_blknum(source);
+	char *par[64];
+	char buf[PATH_MAX];
+	int i = 0;
+	char *buf_of = NULL, *buf_bs = NULL, *buf_count = NULL;
+	int rc;
+
+	// tool
+	par[i++] = "/multiboot/busybox";
+	par[i++] = "dd";
+
+	// input
+	par[i++] = "if=/dev/zero";
+
+	// output
+	sprintf(buf, "of=%s", target);
+	buf_of = strdup(buf);
+	par[i++] = buf_of;
+
+	// blocksize
+	sprintf(buf, "bs=%d", block_size);
+	buf_bs = strdup(buf);
+	par[i++] = buf_bs;
+
+	// count
+	sprintf(buf, "count=%lu", numblocks);
+	buf_count = strdup(buf);
+	par[i++] = buf_count;
+
+	// end
+	par[i++] = (char *)0;
+
+	// exec
+	rc = do_exec(par);
+
+	// cleanup
+	free(buf_of);
+	free(buf_bs);
+	free(buf_count);
+
+	return rc;
+}
+
+int set_loop(char *device, char *file, int ro)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = "/multiboot/busybox";
+	par[i++] = "losetup";
+
+	// access mode
+	if (ro)
+		par[i++] = "-r";
+
+	// paths
+	par[i++] = device;
+	par[i++] = file;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
 }

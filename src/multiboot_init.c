@@ -7,6 +7,7 @@
 #include <sys/mount.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <unistd.h>
 
 #include <lib/cmdline.h>
 #include <lib/fs_mgr.h>
@@ -36,34 +37,34 @@ static bool multiboot_initialized = false;
 static bool enable_multiboot = false;
 static struct fstab *fstab;
 static struct redirect_info info[] = {
-	{"stat", 0, 1},
-	{"lstat", 0, 0},
-	{"newstat", 0, 1},
-	{"newlstat", 0, 0},
-	{"stat64", 0, 1},
-	{"lstat64", 0, 0},
-	//{"chroot", 0, 0},
-	//{"mknod", 0, 0},
-	{"chmod", 0, 0},
-	{"open", 0, 1},
-	{"access", 0, 0},
-	{"chown", 0, 1},
-	{"lchown", 0, 0},
-	{"chown16", 0, 1},
-	{"lchown16", 0, 0},
-	{"utime", 0, 0},
-	{"utimes", 0, 0},
-	//{"chdir", 0, 0},
-	{"mknodat", 1, 0},
-	{"futimesat", 1, 0},
-	{"faccessat", 1, 0},
-	{"fchmodat", 1, 0},
-	{"fchownat", 1, 0},
-	{"openat", 1, 0},
-	{"newfstatat", 1, 1},
-	{"fstatat64", 1, 1},
-	{"utimensat", 1, 0},
-	//{"execve", 0, 0},
+	{"stat", 0, 1, 0},
+	{"lstat", 0, 0, 0},
+	{"newstat", 0, 1, 0},
+	{"newlstat", 0, 0, 0},
+	{"stat64", 0, 1, 0},
+	{"lstat64", 0, 0, 0},
+	//{"chroot", 0, 0, 0},
+	//{"mknod", 0, 0, 0},
+	{"chmod", 0, 0, 0},
+	{"open", 0, 1, 0},
+	{"access", 0, 0, 0},
+	{"chown", 0, 1, 0},
+	{"lchown", 0, 0, 0},
+	{"chown16", 0, 1, 0},
+	{"lchown16", 0, 0, 0},
+	{"utime", 0, 0, 0},
+	{"utimes", 0, 0, 0},
+	//{"chdir", 0, 0, 0},
+	{"mknodat", 1, 0, 0},
+	{"futimesat", 1, 0, 0},
+	{"faccessat", 1, 0, 0},
+	{"fchmodat", 1, 0, 0},
+	{"fchownat", 1, 0, 0},
+	{"openat", 1, 0, 0},
+	{"newfstatat", 1, 1, 0},
+	{"fstatat64", 1, 1, 0},
+	{"utimensat", 1, 0, 0},
+	//{"execve", 0, 0, 0},
 };
 
 static void kperror(const char *message)
@@ -149,6 +150,10 @@ static void translate_fstab_paths(struct fstab *fstab)
 
 static void init_multiboot_environment(void)
 {
+	int i;
+	char buf[PATH_MAX];
+	struct stat sb;
+
 	KLOG_INFO(LOG_TAG, "%s\n", __func__);
 
 	// resolve symlinks in fstab paths
@@ -158,20 +163,66 @@ static void init_multiboot_environment(void)
 	import_kernel_cmdline(import_kernel_nv);
 
 	if (enable_multiboot) {
-		char buf[PATH_MAX];
-
 		// mount source partition
 		sprintf(buf, "/dev/block/mmcblk%dp%d", source_device,
 			source_partition);
 		KLOG_INFO(LOG_TAG, "source_partition: %s\n", buf);
 		mount(buf, PATH_MOUNTPOINT_SOURCE, "ext4",
-		      MS_NOATIME | MS_NOEXEC | MS_NOSUID,
-		      "context=u:object_r:sdcard_external:s0");
+		      0, "context=u:object_r:sdcard_external:s0");
 
-		// create mb directories
+		// create main mb directory
 		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s", source_path);
 		KLOG_INFO(LOG_TAG, "source_path: %s\n", buf);
 		mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO);
+
+		// setup filesystem
+		for (i = 0; i < fstab->num_entries; i++) {
+			if (!strcmp(fstab->recs[i].fs_type, "ext4")) {
+				// create directory
+				sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s",
+					source_path,
+					fstab->recs[i].mount_point);
+				if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
+					kperror("mkpath");
+					continue;
+				}
+				// set bind directory as device
+				fstab->recs[i].replacement_device = strdup(buf);
+				fstab->recs[i].replacement_bind = 1;
+			}
+
+			else {
+				// create filesystem image
+				sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s.img",
+					source_path,
+					fstab->recs[i].mount_point);
+				if (stat(buf, &sb)) {
+					if (createRawImage
+					    (fstab->recs[i].blk_device, buf)) {
+						kperror("createRawImage");
+						continue;
+					}
+				}
+				// create file backup
+				char *file = strdup(buf);
+
+				// create device node
+				sprintf(buf, "/dev/block/loop%d", 255 - i);
+				mknod(buf, fstab->recs[i].statbuf.st_mode,
+				      makedev(7, 255 - i));
+
+				// setup loop
+				if (set_loop(buf, file, 0))
+					kperror("set_loop");
+
+				// set loop dev as device
+				fstab->recs[i].replacement_device = strdup(buf);
+				fstab->recs[i].replacement_bind = 0;
+
+				// cleanup
+				free(file);
+			}
+		}
 
 		multiboot_initialized = true;
 	}
@@ -205,7 +256,6 @@ int hook_mount(struct tracy_event *e)
 	struct fstab_rec *fstabrec;
 	tracy_child_addr_t devname_new = NULL;
 	char *devname = NULL, *mountpoint = NULL;
-	char buf[PATH_MAX];
 	int rc = TRACY_HOOK_CONTINUE;
 
 	if (e->child->pre_syscall) {
@@ -217,7 +267,7 @@ int hook_mount(struct tracy_event *e)
 		devname = get_patharg(e->child, e->args.a0, 1);
 		mountpoint = get_patharg(e->child, e->args.a1, 1);
 		unsigned long flags = (unsigned long)e->args.a3;
-		KLOG_DEBUG(LOG_TAG, "mount %s on %s remount=%d, ro=%d\n",
+		KLOG_DEBUG(LOG_TAG, "mount %s on %s remount=%lu, ro=%lu\n",
 			   devname, mountpoint, (flags & MS_REMOUNT),
 			   (flags & MS_RDONLY));
 
@@ -238,17 +288,9 @@ int hook_mount(struct tracy_event *e)
 		KLOG_INFO(LOG_TAG, "hijack: mount %s on %s\n", devname,
 			  mountpoint);
 
-		// create directory for bind mount
-		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s", source_path,
-			fstabrec->mount_point);
-		KLOG_INFO(LOG_TAG, "bind to %s\n", buf);
-		if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
-			kperror("mkpath");
-			rc = TRACY_HOOK_ABORT;
-			goto out;
-		}
 		// copy new devname
-		devname_new = copy_patharg(e->child, buf);
+		devname_new =
+		    copy_patharg(e->child, fstabrec->replacement_device);
 		if (!devname_new) {
 			kperror("copy_patharg");
 			rc = TRACY_HOOK_ABORT;
@@ -259,9 +301,10 @@ int hook_mount(struct tracy_event *e)
 
 		// modify args
 		a.a0 = (long)devname_new;
-		a.a2 = 0;
-		a.a3 |= MS_BIND;
-
+		if (fstabrec->replacement_bind) {
+			a.a2 = 0;
+			a.a3 |= MS_BIND;
+		}
 		// write new args
 		if (tracy_modify_syscall_args(e->child, a.syscall, &a)) {
 			kperror("tracy_modify_syscall_args");
@@ -339,7 +382,10 @@ int redirect_file_access(struct tracy_event *e, int argpos,
 			  argpos);
 
 		// copy new devname
-		devname_new = copy_patharg(e->child, "/dev/null");
+		devname_new =
+		    copy_patharg(e->child,
+				 fstabrec->replacement_bind ? "/dev/null" :
+				 fstabrec->replacement_device);
 		if (!devname_new) {
 			kperror("copy_patharg");
 			rc = TRACY_HOOK_ABORT;
@@ -377,7 +423,7 @@ out:
 	return rc;
 }
 
-int sig_hook(struct tracy_event *e)
+int sig_hook(struct tracy_event __attribute__ ((unused)) * e)
 {
 	if (detach_all_children)
 		return TRACY_HOOK_DETACH_CHILD;
@@ -387,7 +433,7 @@ int sig_hook(struct tracy_event *e)
 
 int hook_fileaccess(struct tracy_event *e)
 {
-	int i;
+	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(info); i++) {
 		if (info[i].syscall_number == e->syscall_num) {
@@ -399,10 +445,11 @@ int hook_fileaccess(struct tracy_event *e)
 	return TRACY_HOOK_ABORT;
 }
 
-int main(int argc, char **argv)
+int main(int __attribute__ ((unused)) argc, char
+	 __attribute__ ((unused)) ** argv)
 {
 	struct tracy *tracy;
-	int i;
+	unsigned int i;
 
 	// init klog
 	klog_init();
