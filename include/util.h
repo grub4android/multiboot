@@ -5,8 +5,6 @@
 
 char *get_process_name_by_pid(const int pid);
 int mkpath(const char *s, mode_t mode);
-int system_is_recovery(void);
-int can_init(void);
 size_t strlcpy(char *dst, const char *src, size_t dstsize);
 size_t strlcat(char *dst, const char *src, size_t dstsize);
 char *get_patharg(struct tracy_child *child, long addr, int real);

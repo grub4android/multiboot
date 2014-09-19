@@ -14,7 +14,6 @@
 #include <unistd.h>
 #include <lib/klog.h>
 
-#define FILE_RECOVERY_BINARY "/sbin/recovery"
 #define LOG_TAG "multiboot-util"
 
 static const size_t block_size = 512;
@@ -81,18 +80,6 @@ out:
 	free(q);
 	free(path);
 	return (rv);
-}
-
-int system_is_recovery(void)
-{
-	struct stat sb;
-	return !stat(FILE_RECOVERY_BINARY, &sb);
-}
-
-int can_init(void)
-{
-	struct stat sb;
-	return !stat("/dev/block", &sb) && !stat("/proc/cmdline", &sb);
 }
 
 /*
