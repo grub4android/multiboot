@@ -261,6 +261,7 @@ int common_late_init(void)
 	int i;
 	char buf[PATH_MAX];
 	struct stat sb;
+	const char *mount_data = NULL;
 
 	if (multiboot_initialized || !can_init())
 		return 0;
@@ -270,13 +271,19 @@ int common_late_init(void)
 	// resolve symlinks in fstab paths
 	translate_fstab_paths(mbfstab);
 
+	// minivold is on ramdisk
+	if (system_is_recovery() && needs_context()) {
+		KLOG_ERROR(LOG_TAG, "minivold: mount with sdcard context\n");
+		mount_data = SOURCE_MOUNT_DATA;
+	}
 	// mount source partition
 	check_fs(source_device_path, "ext4", PATH_MOUNTPOINT_SOURCE);
-	mount(source_device_path, PATH_MOUNTPOINT_SOURCE, "ext4", 0, NULL);
+	mount(source_device_path, PATH_MOUNTPOINT_SOURCE, "ext4", 0,
+	      mount_data);
 
-	// check if we need the sdcard context
-	if (needs_context()) {
-		KLOG_ERROR(LOG_TAG, "we need a context\n");
+	// android's vold is on /system that's why we couldn't check it before mounting
+	if (!system_is_recovery() && needs_context()) {
+		KLOG_ERROR(LOG_TAG, "vold: remount with sdcard context\n");
 		umount(PATH_MOUNTPOINT_SOURCE);
 		mount(source_device_path, PATH_MOUNTPOINT_SOURCE, "ext4",
 		      0, SOURCE_MOUNT_DATA);
