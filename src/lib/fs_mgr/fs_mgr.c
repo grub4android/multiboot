@@ -90,6 +90,37 @@ struct fs_mgr_flag_values {
 	unsigned int zram_size;
 };
 
+/*
+ * gettime() - returns the time in seconds of the system's monotonic clock or
+ * zero on error.
+ */
+static time_t gettime(void)
+{
+	struct timespec ts;
+	int ret;
+
+	ret = clock_gettime(CLOCK_MONOTONIC, &ts);
+	if (ret < 0) {
+		ERROR("clock_gettime(CLOCK_MONOTONIC) failed: %s\n",
+		      strerror(errno));
+		return 0;
+	}
+
+	return ts.tv_sec;
+}
+
+static int wait_for_file(const char *filename, int timeout)
+{
+	struct stat info;
+	time_t timeout_time = gettime() + timeout;
+	int ret = -1;
+
+	while (gettime() < timeout_time && ((ret = stat(filename, &info)) < 0))
+		usleep(10000);
+
+	return ret;
+}
+
 static int parse_flags(char *flags, struct flag_list *fl,
 		       struct fs_mgr_flag_values *flag_vals,
 		       char *fs_options, int fs_options_len)
@@ -417,6 +448,140 @@ void check_fs(char *blk_device, char *fs_type, char *target)
 	}
 
 	return;
+}
+
+static void remove_trailing_slashes(char *n)
+{
+	int len;
+
+	len = strlen(n) - 1;
+	while ((*(n + len) == '/') && len) {
+		*(n + len) = '\0';
+		len--;
+	}
+}
+
+/*
+ * Mark the given block device as read-only, using the BLKROSET ioctl.
+ * Return 0 on success, and -1 on error.
+ */
+static void fs_set_blk_ro(const char *blockdev)
+{
+	int fd;
+	int ON = 1;
+
+	fd = open(blockdev, O_RDONLY);
+	if (fd < 0) {
+		// should never happen
+		return;
+	}
+
+	ioctl(fd, BLKROSET, &ON);
+	close(fd);
+}
+
+/*
+ * __mount(): wrapper around the mount() system call which also
+ * sets the underlying block device to read-only if the mount is read-only.
+ * See "man 2 mount" for return values.
+ */
+static int __mount(const char *source, const char *target,
+		   const char *filesystemtype, unsigned long mountflags,
+		   const void *data)
+{
+	int ret = mount(source, target, filesystemtype, mountflags, data);
+
+	if ((ret == 0) && (mountflags & MS_RDONLY) != 0) {
+		fs_set_blk_ro(source);
+	}
+
+	return ret;
+}
+
+static int fs_match(char *in1, char *in2)
+{
+	char *n1;
+	char *n2;
+	int ret;
+
+	n1 = strdup(in1);
+	n2 = strdup(in2);
+
+	remove_trailing_slashes(n1);
+	remove_trailing_slashes(n2);
+
+	ret = !strcmp(n1, n2);
+
+	free(n1);
+	free(n2);
+
+	return ret;
+}
+
+/* If tmp_mount_point is non-null, mount the filesystem there.  This is for the
+ * tmp mount we do to check the user password
+ */
+int fs_mgr_do_mount(struct fstab *fstab, char *n_name, char *n_blk_device,
+		    char *tmp_mount_point)
+{
+	int i = 0;
+	int ret = -1;
+	char *m;
+
+	if (!fstab) {
+		return ret;
+	}
+
+	for (i = 0; i < fstab->num_entries; i++) {
+		if (!fs_match(fstab->recs[i].mount_point, n_name)) {
+			continue;
+		}
+
+		/* We found our match */
+		/* If this swap or a raw partition, report an error */
+		if (!strcmp(fstab->recs[i].fs_type, "swap") ||
+		    !strcmp(fstab->recs[i].fs_type, "emmc") ||
+		    !strcmp(fstab->recs[i].fs_type, "mtd")) {
+			ERROR("Cannot mount filesystem of type %s on %s\n",
+			      fstab->recs[i].fs_type, n_blk_device);
+			goto out;
+		}
+
+		/* First check the filesystem if requested */
+		if (fstab->recs[i].fs_mgr_flags & MF_WAIT) {
+			wait_for_file(n_blk_device, WAIT_TIMEOUT);
+		}
+
+		if (fstab->recs[i].fs_mgr_flags & MF_CHECK) {
+			check_fs(n_blk_device, fstab->recs[i].fs_type,
+				 fstab->recs[i].mount_point);
+		}
+
+		/* Now mount it where requested */
+		if (tmp_mount_point) {
+			m = tmp_mount_point;
+		} else {
+			m = fstab->recs[i].mount_point;
+		}
+		if (__mount(n_blk_device, m, fstab->recs[i].fs_type,
+			    fstab->recs[i].flags, fstab->recs[i].fs_options)) {
+			ERROR
+			    ("Cannot mount filesystem on %s at %s options: %s error: %s\n",
+			     n_blk_device, m, fstab->recs[i].fs_options,
+			     strerror(errno));
+			goto out;
+		} else {
+			ret = 0;
+			goto out;
+		}
+	}
+
+	/* We didn't find a match, say so and return an error */
+	ERROR("Cannot find mount point %s in fstab\n",
+	      fstab->recs[i].mount_point);
+
+out:
+	return ret;
 }
 
 /*

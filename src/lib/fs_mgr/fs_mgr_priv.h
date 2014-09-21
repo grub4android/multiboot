@@ -23,6 +23,8 @@
 #define INFO(x...)    KLOG_INFO("fs_mgr", x)
 #define ERROR(x...)   KLOG_ERROR("fs_mgr", x)
 
+#define WAIT_TIMEOUT 20
+
 /* fstab has the following format:
  *
  * Any line starting with a # is a comment and ignored

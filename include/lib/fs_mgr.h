@@ -63,11 +63,13 @@ extern "C" {
 	struct fstab *fs_mgr_read_fstab(const char *fstab_path);
 	void fs_mgr_free_fstab(struct fstab *fstab);
 	void check_fs(char *blk_device, char *fs_type, char *target);
+	int fs_mgr_do_mount(struct fstab *fstab, char *n_name,
+			    char *n_blk_device, char *tmp_mount_point);
 	int fs_mgr_get_crypt_info(struct fstab *fstab, char *key_loc,
 				  char *real_blk_device, int size);
-	int fs_mgr_add_entry(struct fstab *fstab,
-			     const char *mount_point, const char *fs_type,
-			     const char *blk_device, long long length);
+	int fs_mgr_add_entry(struct fstab *fstab, const char *mount_point,
+			     const char *fs_type, const char *blk_device,
+			     long long length);
 	struct fstab_rec *fs_mgr_get_entry_for_mount_point(struct fstab *fstab,
 							   const char *path);
 	int fs_mgr_is_voldmanaged(struct fstab_rec *fstab);
