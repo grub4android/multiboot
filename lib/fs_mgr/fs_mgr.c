@@ -77,6 +77,7 @@ static struct flag_list fs_mgr_flags[] = {
 	{"zramsize=", MF_ZRAMSIZE},
 	{"verify", MF_VERIFY},
 	{"noemulatedsd", MF_NOEMULATEDSD},
+	{"multiboot", MF_MULTIBOOT},
 	{"defaults", 0},
 	{0, 0},
 };
@@ -236,7 +237,7 @@ static int parse_flags(char *flags, struct flag_list *fl,
 	return f;
 }
 
-struct fstab *fs_mgr_read_fstab(const char *fstab_path)
+struct fstab *do_fs_mgr_read_fstab(const char *fstab_path, bool twrp)
 {
 	FILE *fstab_file;
 	int cnt, entries;
@@ -280,6 +281,7 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
 
 	/* Allocate and init the fstab structure */
 	fstab = calloc(1, sizeof(struct fstab));
+	fstab->twrp = twrp;
 	fstab->num_entries = entries;
 	fstab->fstab_filename = strdup(fstab_path);
 	fstab->recs = calloc(fstab->num_entries, sizeof(struct fstab_rec));
@@ -311,6 +313,49 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
 			break;
 		}
 
+		if (twrp) {
+			if (!(p = strtok_r(line, delim, &save_ptr))) {
+				ERROR("Error parsing mount_point\n");
+				goto err;
+			}
+			fstab->recs[cnt].mount_point = strdup(p);
+
+			if (!(p = strtok_r(NULL, delim, &save_ptr))) {
+				ERROR("Error parsing fs_type\n");
+				goto err;
+			}
+			fstab->recs[cnt].fs_type = strdup(p);
+
+			if (!(p = strtok_r(NULL, delim, &save_ptr))) {
+				ERROR("Error parsing mount source\n");
+				goto err;
+			}
+			fstab->recs[cnt].blk_device = strdup(p);
+
+			char *unhandled = NULL;
+			while ((p = strtok_r(NULL, delim, &save_ptr))) {
+				int len_old =
+				    unhandled ? strlen(unhandled) : 0, len_new =
+				    strlen(p);
+				unhandled =
+				    realloc(unhandled, len_old + len_new + 1);
+				memcpy(unhandled + len_old, p, len_new + 1);
+			}
+
+			fstab->recs[cnt].unhandled_columns = unhandled;
+
+			fstab->recs[cnt].fs_options_unparsed =
+			    strdup("defaults");
+			fstab->recs[cnt].fs_options = strdup("");
+			fstab->recs[cnt].flags = 0;
+
+			fstab->recs[cnt].fs_mgr_flags_unparsed =
+			    strdup("defaults");
+			fstab->recs[cnt].fs_mgr_flags = 0;
+
+			goto finish_rec;
+		}
+
 		if (!(p = strtok_r(line, delim, &save_ptr))) {
 			ERROR("Error parsing mount source\n");
 			goto err;
@@ -333,6 +378,7 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
 			ERROR("Error parsing mount_flags\n");
 			goto err;
 		}
+
 		fstab->recs[cnt].fs_options_unparsed = strdup(p);
 		tmp_fs_options[0] = '\0';
 		fstab->recs[cnt].flags = parse_flags(p, mount_flags, NULL,
@@ -350,10 +396,13 @@ struct fstab *fs_mgr_read_fstab(const char *fstab_path)
 			ERROR("Error parsing fs_mgr_options\n");
 			goto err;
 		}
+
 		fstab->recs[cnt].fs_mgr_flags_unparsed = strdup(p);
 		fstab->recs[cnt].fs_mgr_flags = parse_flags(p, fs_mgr_flags,
 							    &flag_vals, NULL,
 							    0);
+
+finish_rec:
 		fstab->recs[cnt].key_loc = flag_vals.key_loc;
 		fstab->recs[cnt].length = flag_vals.part_length;
 		fstab->recs[cnt].label = flag_vals.label;
@@ -372,6 +421,11 @@ err:
 	if (fstab)
 		fs_mgr_free_fstab(fstab);
 	return NULL;
+}
+
+struct fstab *fs_mgr_read_fstab(const char *fstab_path)
+{
+	return do_fs_mgr_read_fstab(fstab_path, 0);
 }
 
 void fs_mgr_free_fstab(struct fstab *fstab)
@@ -702,4 +756,9 @@ int fs_mgr_is_noemulatedsd(struct fstab_rec *fstab)
 int fs_mgr_is_wait(struct fstab_rec *fstab)
 {
 	return fstab->fs_mgr_flags & MF_WAIT;
+}
+
+int fs_mgr_is_multiboot(struct fstab_rec *fstab)
+{
+	return fstab->fs_mgr_flags & MF_MULTIBOOT;
 }

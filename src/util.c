@@ -1,20 +1,4 @@
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <errno.h>
-#include <libgen.h>
-#include <string.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <stdio.h>
-#include <tracy.h>
-#include <linux/limits.h>
-#include <sys/mman.h>
-#include <linux/fs.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#include <lib/klog.h>
-
-#define LOG_TAG "multiboot-util"
+#include <common.h>
 
 static const size_t block_size = 512;
 
@@ -80,6 +64,39 @@ out:
 	free(q);
 	free(path);
 	return (rv);
+}
+
+int util_mount(const char *source, const char *target,
+	       const char *filesystemtype, unsigned long mountflags,
+	       const void *data)
+{
+
+	if (mkpath(target, S_IRWXU | S_IRWXG | S_IRWXO)) {
+		return -1;
+	}
+
+	return mount(source, target, filesystemtype, mountflags, data);
+}
+
+char *make_loop(const char *path)
+{
+	static int loops_created = 0;
+
+	char buf[PATH_MAX];
+	int minor = 255 - loops_created;
+
+	if (!path) {
+		sprintf(buf, PATH_MOUNTPOINT_DEV "/loop%d", minor);
+		path = buf;
+	}
+
+	if (mknod(path, S_IRUSR | S_IWUSR | S_IFBLK, makedev(7, minor))) {
+		kperror("mknod");
+		return NULL;
+	}
+
+	loops_created++;
+	return strdup(buf);
 }
 
 /*

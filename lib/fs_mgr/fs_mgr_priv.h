@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef __CORE_FS_MGR_PRIV_H
-#define __CORE_FS_MGR_PRIV_H
+#ifndef __LIB_FS_MGR_PRIV_H
+#define __LIB_FS_MGR_PRIV_H
 
 #include <lib/klog.h>
 #include <lib/fs_mgr.h>
@@ -70,6 +70,7 @@
 #define MF_SWAPPRIO     0x80
 #define MF_ZRAMSIZE     0x100
 #define MF_VERIFY       0x200
+#define MF_MULTIBOOT    0x300
 /*
  * There is no emulated sdcard daemon running on /data/media on this device,
  * so treat the physical SD card as the only external storage device,
@@ -79,4 +80,4 @@
 
 #define DM_BUF_SIZE 4096
 
-#endif /* __CORE_FS_MGR_PRIV_H */
+#endif /* __LIB_FS_MGR_PRIV_H */

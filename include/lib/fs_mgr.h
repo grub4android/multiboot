@@ -28,6 +28,7 @@ extern "C" {
 		int num_entries;
 		struct fstab_rec *recs;
 		char *fstab_filename;
+		int twrp;
 	};
 
 	struct fstab_rec {
@@ -36,6 +37,7 @@ extern "C" {
 		char *fs_type;
 		char *fs_options_unparsed;
 		char *fs_mgr_flags_unparsed;
+		char *unhandled_columns;
 		unsigned long flags;
 		char *fs_options;
 		int fs_mgr_flags;
@@ -60,6 +62,7 @@ extern "C" {
 		char *lun;
 	};
 
+	struct fstab *do_fs_mgr_read_fstab(const char *fstab_path, bool twrp);
 	struct fstab *fs_mgr_read_fstab(const char *fstab_path);
 	void fs_mgr_free_fstab(struct fstab *fstab);
 	void check_fs(char *blk_device, char *fs_type, char *target);
@@ -77,6 +80,7 @@ extern "C" {
 	int fs_mgr_is_encryptable(struct fstab_rec *fstab);
 	int fs_mgr_is_noemulatedsd(struct fstab_rec *fstab);
 	int fs_mgr_is_wait(struct fstab_rec *fstab);
+	int fs_mgr_is_multiboot(struct fstab_rec *fstab);
 #ifdef __cplusplus
 }
 #endif

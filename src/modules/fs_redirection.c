@@ -1,19 +1,4 @@
-#include <tracy.h>
-#include <ll.h>
-#include <stdbool.h>
-#include <sys/mount.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <stdlib.h>
-
-#include <lib/fs_mgr.h>
-#include <lib/klog.h>
-#include <util.h>
-
-#include <mb_common.h>
-#include <mb_fs_redirection.h>
-#include <mb_fstab_patcher.h>
+#include <common.h>
 
 struct redirect_info {
 	char *syscall_name;
@@ -49,6 +34,32 @@ static struct redirect_info info[] = {
 	{"utimensat", 1, 0, 0},
 };
 
+static struct module_data *module_data = NULL;
+
+static struct fstab_rec *get_fstab_rec(const char *devname)
+{
+	int i;
+	struct stat sb;
+
+	bool use_stat = !stat(devname, &sb);
+	struct fstab *mbfstab = module_data->multiboot_fstab;
+
+	for (i = 0; i < mbfstab->num_entries; i++) {
+		if (!fs_mgr_is_multiboot(&mbfstab->recs[i]))
+			continue;
+
+		if (use_stat && sb.st_rdev == mbfstab->recs[i].statbuf.st_rdev) {
+			return &mbfstab->recs[i];
+		}
+		if (!strcmp(devname, mbfstab->recs[i].blk_device)) {
+			return &mbfstab->recs[i];
+		}
+	}
+
+	KLOG_DEBUG(LOG_TAG, "%s: no match for %s\n", __func__, devname);
+	return NULL;
+}
+
 static int redirect_file_access(struct tracy_event *e, int argpos,
 				bool resolve_symlinks)
 {
@@ -61,7 +72,7 @@ static int redirect_file_access(struct tracy_event *e, int argpos,
 
 	if (e->child->pre_syscall) {
 		// we need to wait for init
-		if (!mb_ready())
+		if (module_data->initstage < INITSTAGE_HOOK)
 			goto out;
 
 		// get path
@@ -140,7 +151,7 @@ static int hook_fileaccess(struct tracy_event *e)
 	return TRACY_HOOK_ABORT;
 }
 
-int redirection_hook_mount(struct tracy_event *e)
+static int fsr_hook_mount(struct module_data *data, struct tracy_event *e)
 {
 	struct tracy_sc_args a;
 	struct fstab_rec *fstabrec;
@@ -148,11 +159,9 @@ int redirection_hook_mount(struct tracy_event *e)
 	char *devname = NULL, *mountpoint = NULL;
 	int rc = TRACY_HOOK_CONTINUE;
 
-	if (e->child->pre_syscall) {
-		// we need to wait for init
-		if (!mb_ready())
-			goto out;
+	module_data = data;
 
+	if (e->child->pre_syscall) {
 		// get args
 		devname = get_patharg(e->child, e->args.a0, 1);
 		mountpoint = get_patharg(e->child, e->args.a1, 1);
@@ -215,9 +224,11 @@ out:
 	return rc;
 }
 
-int redirection_tracy_init(struct tracy *tracy)
+static int fsr_tracy_init(struct module_data *data)
 {
 	unsigned i;
+	module_data = data;
+	KLOG_INFO(LOG_TAG, "%s\n", __func__);
 
 	// hooks for file access redirection
 	for (i = 0; i < ARRAY_SIZE(info); i++) {
@@ -225,7 +236,7 @@ int redirection_tracy_init(struct tracy *tracy)
 		    get_syscall_number_abi(info[i].syscall_name,
 					   TRACY_ABI_NATIVE);
 		if (tracy_set_hook
-		    (tracy, info[i].syscall_name, TRACY_ABI_NATIVE,
+		    (data->tracy, info[i].syscall_name, TRACY_ABI_NATIVE,
 		     hook_fileaccess)) {
 			KLOG_ERROR(LOG_TAG, "Could not hook %s\n",
 				   info[i].syscall_name);
@@ -235,3 +246,10 @@ int redirection_tracy_init(struct tracy *tracy)
 
 	return 0;
 }
+
+static struct module module_fs_redirection = {
+	.tracy_init = fsr_tracy_init,
+	.hook_mount = fsr_hook_mount,
+};
+
+module_add(module_fs_redirection);
