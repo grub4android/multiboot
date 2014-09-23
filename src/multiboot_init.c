@@ -131,8 +131,10 @@ static int load_multiboot_fstab(void)
 	for (i = 0; i < mbfstab->num_entries; i++) {
 
 		// bind mount
-		// TODO add more filesystems
-		if (!strcmp(mbfstab->recs[i].fs_type, "ext4")) {
+		if (!strcmp(mbfstab->recs[i].fs_type, "ext2")
+		    || !strcmp(mbfstab->recs[i].fs_type, "ext3")
+		    || !strcmp(mbfstab->recs[i].fs_type, "ext4")
+		    || !strcmp(mbfstab->recs[i].fs_type, "f2fs")) {
 			// get directory
 			sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s",
 				module_data.multiboot_path,
