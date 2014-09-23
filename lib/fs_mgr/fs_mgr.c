@@ -338,8 +338,10 @@ struct fstab *do_fs_mgr_read_fstab(const char *fstab_path, bool twrp)
 				    unhandled ? strlen(unhandled) : 0, len_new =
 				    strlen(p);
 				unhandled =
-				    realloc(unhandled, len_old + len_new + 1);
-				memcpy(unhandled + len_old, p, len_new + 1);
+				    realloc(unhandled, len_old + len_new + 2);
+				memcpy(unhandled + len_old, p, len_new);
+				unhandled[len_old + len_new] = ' ';
+				unhandled[len_old + len_new + 1] = '\0';
 			}
 
 			fstab->recs[cnt].unhandled_columns = unhandled;
