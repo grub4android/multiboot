@@ -22,6 +22,7 @@ add_executable(init
 	src/modules/fs_redirection.c
 
 	lib/klog.c
+	lib/uevent.c
 	lib/cmdline.c
 	lib/fs_mgr/fs_mgr.c
 )

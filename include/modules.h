@@ -40,11 +40,13 @@ struct module_data {
 
 	char *grub_device;
 	char *grub_path;
+	struct sys_block_uevent *grub_blockinfo;
 
 	// fstab
 	struct fstab *multiboot_fstab;
 	struct fstab **target_fstabs;
 	unsigned target_fstabs_count;
+	struct sys_block_info *block_info;
 
 	// tracy_init
 	struct tracy *tracy;

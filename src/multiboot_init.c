@@ -245,6 +245,19 @@ static int setup(void)
 	util_mount("tmpfs", PATH_MOUNTPOINT_DEV, "tmpfs", MS_NOSUID,
 		   "mode=0755");
 
+	// mount sysfs
+	mkdir("/sys", 0755);
+	mount("sysfs", "/sys", "sysfs", 0, NULL);
+
+	module_data.block_info = get_block_devices();
+	if (!module_data.block_info) {
+		KLOG_ERROR(LOG_TAG, "Couldn't get block_info!\n");
+		rc = -1;
+		goto unmount_procfs;
+	}
+	// unmount sysfs
+	umount("/sys");
+
 	// mount procfs
 	mkdir("/proc", 0755);
 	mount("proc", "/proc", "proc", 0, NULL);
@@ -266,6 +279,16 @@ static int setup(void)
 	// we don't need any patching
 	if (!module_data.multiboot_enabled && !module_data.sndstage_enabled) {
 		goto unmount_procfs;
+	}
+	// get grub blockinfo
+	if (module_data.grub_device && module_data.grub_path) {
+		module_data.grub_blockinfo =
+		    get_blockinfo_for_path(module_data.block_info,
+					   module_data.grub_device);
+		if (!module_data.grub_blockinfo) {
+			rc = -1;
+			goto unmount_procfs;
+		}
 	}
 	// early init
 	module_data.initstage = INITSTAGE_EARLY;

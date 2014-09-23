@@ -48,6 +48,30 @@ static int patch_fstab(struct module_data *data, int index)
 
 		// lookup partition in multiboot fstab
 		bool use_bind = false;
+
+		// fixup for boot and recovery partitions on 2ndstage devices
+		if (data->sndstage_enabled && data->grub_device
+		    && data->grub_path) {
+			struct sys_block_uevent *event =
+			    get_blockinfo_for_path(data->block_info,
+						   blk_device);
+			if (!event) {
+				KLOG_WARNING(LOG_TAG,
+					     "Couldn't find event_info for path %s!\n",
+					     blk_device);
+			} else if (event->major ==
+				   data->grub_blockinfo->major
+				   && event->minor ==
+				   data->grub_blockinfo->minor) {
+				blk_device = PATH_MOUNTPOINT_GRUB;
+				// TODO TWRP seems to ignore this
+				if (fstab_orig->twrp)
+					fs_options = "flags=fsflags=\"bind\"";
+				else
+					fs_options = "bind";
+			}
+		}
+
 		if (data->multiboot_enabled) {
 			rec =
 			    fs_mgr_get_entry_for_mount_point(mbfstab,
@@ -112,7 +136,7 @@ static int fp_fstab_init(struct module_data *data)
 {
 	unsigned i;
 
-	printf("patch fstabs...\n");
+	KLOG_INFO(LOG_TAG, "patch fstabs...\n");
 	for (i = 0; i < data->target_fstabs_count; i++) {
 		if (patch_fstab(data, i))
 			return -1;

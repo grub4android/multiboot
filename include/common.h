@@ -14,9 +14,11 @@
 #include <dirent.h>
 #include <libgen.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 #include <lib/cmdline.h>
 #include <lib/fs_mgr.h>
+#include <lib/uevent.h>
 #include <lib/klog.h>
 #include <util.h>
 #include <modules.h>
