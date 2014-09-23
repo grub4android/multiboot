@@ -37,7 +37,7 @@ static int add_uevent_entry(struct sys_block_info *info, const char *filename)
 	// open file
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
-		KLOG_ERROR(LOG_TAG, "Can't open file %s!\n", filename);
+		ERROR("Can't open file %s!\n", filename);
 		return -1;
 	}
 	// allocate memory
@@ -85,7 +85,7 @@ static int add_uevent_entry(struct sys_block_info *info, const char *filename)
 	}
 	// close file
 	fclose(fp);
-	//KLOG_ERROR(LOG_TAG, "partname=%s major=%d minor=%d type=%d\n", info->entries[index].partname, info->entries[index].major, info->entries[index].minor, info->entries[index].type);
+
 	return 0;
 }
 

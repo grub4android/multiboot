@@ -34,6 +34,12 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 
+#define ERROR(x...)   KLOG_ERROR(LOG_TAG, x)
+#define WARNING(x...) KLOG_WARNING(LOG_TAG, x)
+#define NOTICE(x...)  KLOG_NOTICE(LOG_TAG, x)
+#define INFO(x...)    KLOG_INFO(LOG_TAG, x)
+#define DEBUG(x...)   KLOG_DEBUG(LOG_TAG, x)
+
 void kperror(const char *message);
 
 #endif

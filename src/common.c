@@ -8,5 +8,5 @@ void kperror(const char *message)
 		message = "";
 	}
 
-	KLOG_ERROR(LOG_TAG, "%s%s%s", message, sep, strerror(errno));
+	ERROR("%s%s%s", message, sep, strerror(errno));
 }

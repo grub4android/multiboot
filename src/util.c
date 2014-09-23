@@ -202,7 +202,7 @@ char *get_patharg(struct tracy_child *child, long addr, int real)
 		return strdup(path);
 	}
 
-	KLOG_ERROR(LOG_TAG, "%s: Error getting patharg!\n", __func__);
+	ERROR("%s: Error getting patharg!\n", __func__);
 	return NULL;
 }
 
@@ -213,7 +213,7 @@ tracy_child_addr_t copy_patharg(struct tracy_child * child, const char *path)
 	tracy_child_addr_t path_new = NULL;
 
 	if (len > PATH_MAX + 1) {
-		KLOG_ERROR(LOG_TAG, "%s: path is too long!\n", __func__);
+		ERROR("%s: path is too long!\n", __func__);
 		goto err;
 	}
 	// allocate memory for new devname
@@ -235,7 +235,7 @@ tracy_child_addr_t copy_patharg(struct tracy_child * child, const char *path)
 err_munmap:
 	tracy_munmap(child, &rc, path_new, len);
 err:
-	KLOG_ERROR(LOG_TAG, "%s: Error copying patharg!\n", __func__);
+	ERROR("%s: Error copying patharg!\n", __func__);
 	return NULL;
 }
 

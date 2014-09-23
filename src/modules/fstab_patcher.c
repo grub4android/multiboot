@@ -31,7 +31,7 @@ static int patch_fstab(struct module_data *data, int index)
 	// open fstab for writing
 	FILE *f = fopen(fstab_orig->fstab_filename, "w");
 	if (!f) {
-		KLOG_ERROR(LOG_TAG, "Error opening fstab!\n");
+		ERROR("Error opening fstab!\n");
 		return -1;
 	}
 	// write new fstab
@@ -56,11 +56,10 @@ static int patch_fstab(struct module_data *data, int index)
 			    get_blockinfo_for_path(data->block_info,
 						   blk_device);
 			if (!event) {
-				KLOG_WARNING(LOG_TAG,
-					     "Couldn't find event_info for path %s!\n",
-					     blk_device);
-			} else if (event->major ==
-				   data->grub_blockinfo->major
+				WARNING
+				    ("Couldn't find event_info for path %s!\n",
+				     blk_device);
+			} else if (event->major == data->grub_blockinfo->major
 				   && event->minor ==
 				   data->grub_blockinfo->minor) {
 				blk_device = PATH_MOUNTPOINT_GRUB;
@@ -136,7 +135,7 @@ static int fp_fstab_init(struct module_data *data)
 {
 	unsigned i;
 
-	KLOG_INFO(LOG_TAG, "patch fstabs...\n");
+	DEBUG("patch fstabs...\n");
 	for (i = 0; i < data->target_fstabs_count; i++) {
 		if (patch_fstab(data, i))
 			return -1;

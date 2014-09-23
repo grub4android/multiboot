@@ -14,14 +14,14 @@ static int mount_grub_partition(struct module_data *data)
 
 	// get target fstab
 	if (data->target_fstabs_count < 1) {
-		KLOG_ERROR(LOG_TAG, "%s: no fstab\n", __func__);
+		ERROR("%s: no fstab\n", __func__);
 		return ret;
 	}
 	fstab = data->target_fstabs[0];
 
 	// stat grub partition
 	if (stat(data->grub_device, &sb_grub_part)) {
-		KLOG_ERROR(LOG_TAG, "%s: couldn't stat grubdev\n", __func__);
+		ERROR("%s: couldn't stat grubdev\n", __func__);
 		return ret;
 	}
 
@@ -41,11 +41,10 @@ static int mount_grub_partition(struct module_data *data)
 		    (fstab->recs[i].blk_device, PATH_MOUNTPOINT_GRUB,
 		     fstab->recs[i].fs_type, fstab->recs[i].flags,
 		     fstab->recs[i].fs_options)) {
-			KLOG_ERROR(LOG_TAG,
-				   "Cannot mount filesystem on %s at %s options: %s error: %s\n",
-				   fstab->recs[i].blk_device,
-				   PATH_MOUNTPOINT_GRUB,
-				   fstab->recs[i].fs_options, strerror(errno));
+			WARNING
+			    ("Cannot mount filesystem on %s at %s options: %s error: %s\n",
+			     fstab->recs[i].blk_device, PATH_MOUNTPOINT_GRUB,
+			     fstab->recs[i].fs_options, strerror(errno));
 			continue;
 		} else {
 			ret = 0;
@@ -56,8 +55,8 @@ static int mount_grub_partition(struct module_data *data)
 	// TODO: search for it in multiboot fstab
 
 	// We didn't find a match, say so and return an error
-	KLOG_ERROR(LOG_TAG, "Cannot find mount point %s in fstab\n",
-		   fstab->recs[i].mount_point);
+	ERROR("Cannot find mount point %s in fstab\n",
+	      fstab->recs[i].mount_point);
 
 out:
 	return ret;
@@ -110,7 +109,7 @@ static int sndstage_setup_partition(struct module_data *data, const char *name)
 	struct fstab_rec *rec =
 	    fs_mgr_get_entry_for_mount_point(data->multiboot_fstab, name);
 	if (rec == NULL) {
-		KLOG_ERROR(LOG_TAG, "Couldn't find %s in mbfstab\n", name);
+		ERROR("Couldn't find %s in mbfstab\n", name);
 		return -1;
 	}
 	// create filesystem image
@@ -124,7 +123,7 @@ static int sndstage_setup_partition(struct module_data *data, const char *name)
 	}
 	// delete original node
 	if (unlink(rec->blk_device)) {
-		KLOG_ERROR(LOG_TAG, "Couldn't delete %s!\n", rec->blk_device);
+		ERROR("Couldn't delete %s!\n", rec->blk_device);
 		return -1;
 	}
 	// create loop device node
@@ -146,14 +145,14 @@ static int ep_late_init(struct module_data *data)
 	struct stat sb;
 	const char *mount_data = NULL;
 
-	KLOG_INFO(LOG_TAG, "%s\n", __func__);
+	DEBUG("%s\n", __func__);
 
 	// mount grub part for bootrec redirection
 	if (data->sndstage_enabled) {
 		// mount grub_dir
 		if (data->grub_device && data->grub_path) {
 			if (mount_grub_partition(data)) {
-				KLOG_ERROR(LOG_TAG, "couldn't mount grubdev\n");
+				ERROR("couldn't mount grubdev\n");
 				rc = -1;
 				goto finish;
 			}
@@ -176,14 +175,13 @@ static int ep_late_init(struct module_data *data)
 		}
 
 		if (!data->multiboot_enabled) {
-			KLOG_ERROR(LOG_TAG,
-				   "this isn't multiboot - stop here.\n");
+			INFO("this isn't multiboot - stop here.\n");
 			goto finish;
 		}
 	}
 	// minivold is on ramdisk
 	if (data->bootmode == BOOTMODE_RECOVERY && needs_context(data)) {
-		KLOG_ERROR(LOG_TAG, "minivold: mount with sdcard context\n");
+		DEBUG("minivold: mount with sdcard context\n");
 		mount_data = SOURCE_MOUNT_DATA;
 	}
 	// mount source partition
@@ -198,7 +196,7 @@ static int ep_late_init(struct module_data *data)
 	}
 	// android's vold is on /system that's why we couldn't check it before mounting
 	if (data->bootmode != BOOTMODE_RECOVERY && needs_context(data)) {
-		KLOG_ERROR(LOG_TAG, "vold: remount with sdcard context\n");
+		DEBUG("vold: remount with sdcard context\n");
 		umount(PATH_MOUNTPOINT_SOURCE);
 		if (mount
 		    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, "ext4", 0,

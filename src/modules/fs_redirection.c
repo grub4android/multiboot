@@ -56,7 +56,7 @@ static struct fstab_rec *get_fstab_rec(const char *devname)
 		}
 	}
 
-	KLOG_DEBUG(LOG_TAG, "%s: no match for %s\n", __func__, devname);
+	DEBUG("%s: no match for %s\n", __func__, devname);
 	return NULL;
 }
 
@@ -91,9 +91,9 @@ static int redirect_file_access(struct tracy_event *e, int argpos,
 			goto out;
 		}
 
-		KLOG_INFO(LOG_TAG, "%s(%s): redirect %s arg=%d\n", __func__,
-			  get_syscall_name_abi(e->syscall_num, e->abi), path,
-			  argpos);
+		DEBUG("%s(%s): redirect %s arg=%d\n", __func__,
+		      get_syscall_name_abi(e->syscall_num, e->abi), path,
+		      argpos);
 
 		// copy new devname
 		devname_new =
@@ -166,9 +166,9 @@ static int fsr_hook_mount(struct module_data *data, struct tracy_event *e)
 		devname = get_patharg(e->child, e->args.a0, 1);
 		mountpoint = get_patharg(e->child, e->args.a1, 1);
 		unsigned long flags = (unsigned long)e->args.a3;
-		KLOG_DEBUG(LOG_TAG, "mount %s on %s remount=%lu, ro=%lu\n",
-			   devname, mountpoint, (flags & MS_REMOUNT),
-			   (flags & MS_RDONLY));
+		DEBUG("mount %s on %s remount=%lu, ro=%lu\n",
+		      devname, mountpoint, (flags & MS_REMOUNT),
+		      (flags & MS_RDONLY));
 
 		// check if we need to redirect this partition
 		fstabrec = get_fstab_rec(devname);
@@ -176,8 +176,7 @@ static int fsr_hook_mount(struct module_data *data, struct tracy_event *e)
 			goto out;
 		}
 
-		KLOG_INFO(LOG_TAG, "hijack: mount %s on %s\n", devname,
-			  mountpoint);
+		DEBUG("hijack: mount %s on %s\n", devname, mountpoint);
 
 		// copy new devname
 		devname_new =
@@ -228,7 +227,7 @@ static int fsr_tracy_init(struct module_data *data)
 {
 	unsigned i;
 	module_data = data;
-	KLOG_INFO(LOG_TAG, "%s\n", __func__);
+	DEBUG("%s\n", __func__);
 
 	// hooks for file access redirection
 	for (i = 0; i < ARRAY_SIZE(info); i++) {
@@ -238,8 +237,7 @@ static int fsr_tracy_init(struct module_data *data)
 		if (tracy_set_hook
 		    (data->tracy, info[i].syscall_name, TRACY_ABI_NATIVE,
 		     hook_fileaccess)) {
-			KLOG_ERROR(LOG_TAG, "Could not hook %s\n",
-				   info[i].syscall_name);
+			ERROR("Could not hook %s\n", info[i].syscall_name);
 			return -1;
 		}
 	}

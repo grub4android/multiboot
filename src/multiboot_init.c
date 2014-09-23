@@ -104,6 +104,15 @@ static void import_kernel_nv(char *name)
 		}
 		module_data.sndstage_enabled = ! !val;
 	}
+
+	if (!strcmp(name, "multiboot.debug")) {
+		unsigned val;
+		if (sscanf(value, "%u", &val) != 1) {
+			kperror("scanf(multiboot.debug)");
+			return;
+		}
+		klog_set_level(val);
+	}
 }
 
 static int load_multiboot_fstab(void)
@@ -115,7 +124,7 @@ static int load_multiboot_fstab(void)
 	// read multiboot fstab
 	module_data.multiboot_fstab = mbfstab = fs_mgr_read_fstab(FILE_FSTAB);
 	if (!mbfstab) {
-		KLOG_ERROR(LOG_TAG, "failed to load %s\n", FILE_FSTAB);
+		ERROR("failed to load %s\n", FILE_FSTAB);
 		return -1;
 	}
 	// get replacement info
@@ -193,11 +202,10 @@ static int add_fstab(const char *path)
 {
 	struct fstab *fstab = fs_mgr_read_fstab(path);
 	if (!fstab) {
-		KLOG_ERROR(LOG_TAG, "failed to load %s\n", path);
+		ERROR("failed to load %s\n", path);
 		fstab = do_fs_mgr_read_fstab(path, 1);
 		if (!fstab) {
-			KLOG_ERROR(LOG_TAG, "failed to load %s as twrp fstab\n",
-				   path);
+			ERROR("failed to load %s as twrp fstab\n", path);
 			return -1;
 		}
 	}
@@ -234,8 +242,8 @@ static int setup(void)
 
 	// init klog
 	klog_init();
-	klog_set_level(6);
-	KLOG_INFO(LOG_TAG, "init\n");
+	klog_set_level(5);	// NOTICE
+	INFO("%s\n", __func__);
 
 	// get system type
 	module_data.bootmode =
@@ -251,7 +259,7 @@ static int setup(void)
 
 	module_data.block_info = get_block_devices();
 	if (!module_data.block_info) {
-		KLOG_ERROR(LOG_TAG, "Couldn't get block_info!\n");
+		ERROR("Couldn't get block_info!\n");
 		rc = -1;
 		goto unmount_procfs;
 	}
@@ -265,16 +273,13 @@ static int setup(void)
 	// parse cmdline
 	import_kernel_cmdline(import_kernel_nv);
 
-	KLOG_INFO(LOG_TAG, "bootmode=%s\n", strbootmode(module_data.bootmode));
-	KLOG_INFO(LOG_TAG, "multiboot_enabled=%d\n",
-		  module_data.multiboot_enabled);
-	KLOG_INFO(LOG_TAG, "sndstage_enabled=%d\n",
-		  module_data.sndstage_enabled);
-	KLOG_INFO(LOG_TAG, "multiboot_device=%s\n",
-		  module_data.multiboot_device);
-	KLOG_INFO(LOG_TAG, "multiboot_path=%s\n", module_data.multiboot_path);
-	KLOG_INFO(LOG_TAG, "grub_device=%s\n", module_data.grub_device);
-	KLOG_INFO(LOG_TAG, "grub_path=%s\n", module_data.grub_path);
+	INFO("bootmode=%s\n", strbootmode(module_data.bootmode));
+	INFO("multiboot_enabled=%d\n", module_data.multiboot_enabled);
+	INFO("sndstage_enabled=%d\n", module_data.sndstage_enabled);
+	INFO("multiboot_device=%s\n", module_data.multiboot_device);
+	INFO("multiboot_path=%s\n", module_data.multiboot_path);
+	INFO("grub_device=%s\n", module_data.grub_device);
+	INFO("grub_path=%s\n", module_data.grub_path);
 
 	// we don't need any patching
 	if (!module_data.multiboot_enabled && !module_data.sndstage_enabled) {
@@ -309,8 +314,8 @@ static int setup(void)
 	// fstab init
 	module_data.initstage = INITSTAGE_FSTAB;
 	if (modules_call_fstab_init(&module_data)) {
+		ERROR("error in fstab_init!\n");
 		rc = -1;
-		KLOG_INFO(LOG_TAG, "error in fstab_init!\n");
 		goto unmount_procfs;
 	}
 
@@ -334,13 +339,13 @@ static int translate_fstab_paths(struct fstab *fstab)
 
 		if (stat(fstab->recs[i].blk_device, &fstab->recs[i].statbuf) <
 		    0)
-			KLOG_ERROR(LOG_TAG, "%s: couldn't stat %s\n", __func__,
-				   fstab->recs[i].blk_device);
+			WARNING("%s: couldn't stat %s\n", __func__,
+				fstab->recs[i].blk_device);
 		else {
 			dev_t dev = fstab->recs[i].statbuf.st_rdev;
-			KLOG_DEBUG(LOG_TAG, "%s: %s: major=%u minor=%u\n",
-				   __func__, fstab->recs[i].blk_device,
-				   major(dev), minor(dev));
+			DEBUG("%s: %s: major=%u minor=%u\n",
+			      __func__, fstab->recs[i].blk_device,
+			      major(dev), minor(dev));
 		}
 	}
 
@@ -376,7 +381,7 @@ static int hook_mount(struct tracy_event *e)
 		// late init
 		module_data.initstage = INITSTAGE_LATE;
 		if (modules_call_late_init(&module_data)) {
-			KLOG_ERROR(LOG_TAG, "error in late_init!\n");
+			ERROR("error in late_init!\n");
 			rc = TRACY_HOOK_ABORT;
 			goto finish;
 		}
@@ -413,12 +418,12 @@ int main(void)
 
 	// early init
 	if (setup()) {
-		KLOG_INFO(LOG_TAG, "error in setup()!\n");
+		ERROR("error in setup()!\n");
 		return EXIT_FAILURE;
 	}
 	// run /init directly without any patching or tracing
 	if (!module_data.multiboot_enabled && !module_data.sndstage_enabled) {
-		KLOG_INFO(LOG_TAG, "multiboot disabled. run /init ...\n");
+		INFO("multiboot disabled. run /init ...\n");
 		if (run_init(NULL)) {
 			kperror("run_init");
 			return EXIT_FAILURE;
@@ -434,7 +439,7 @@ int main(void)
 
 	// hook mount
 	if (tracy_set_hook(tracy, "mount", TRACY_ABI_NATIVE, hook_mount)) {
-		KLOG_ERROR(LOG_TAG, "Could not hook mount\n");
+		ERROR("Could not hook mount\n");
 		return EXIT_FAILURE;
 	}
 	// RECOVERY
@@ -444,7 +449,7 @@ int main(void)
 			module_data.initstage = INITSTAGE_TRACY;
 			// tracy init
 			if (modules_call_tracy_init(&module_data)) {
-				KLOG_ERROR(LOG_TAG, "error in tracy_init!\n");
+				ERROR("error in tracy_init!\n");
 				return EXIT_FAILURE;
 			}
 		} else if (module_data.sndstage_enabled) {
@@ -469,7 +474,7 @@ int main(void)
 	tracy_free(tracy);
 
 	// wait for all childs to finish - that hopefully will never happen
-	KLOG_ERROR(LOG_TAG, "TRACY EXIT. waiting now...\n");
+	DEBUG("TRACY EXIT. waiting now...\n");
 	while (waitpid(-1, NULL, 0)) {
 		if (errno == ECHILD) {
 			break;
