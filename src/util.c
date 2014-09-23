@@ -361,3 +361,26 @@ int copy_file(char *source, char *target)
 
 	return do_exec(par);
 }
+
+const char *get_fstype(const char *blk_device)
+{
+	const char *type;
+	blkid_probe pr;
+
+	pr = blkid_new_probe_from_filename(blk_device);
+	if (blkid_do_fullprobe(pr)) {
+		blkid_free_probe(pr);
+		ERROR("Can't probe device %s\n", blk_device);
+		return NULL;
+	}
+
+	if (blkid_probe_lookup_value(pr, "TYPE", &type, NULL) < 0) {
+		blkid_free_probe(pr);
+		ERROR("can't find filesystem on device %s\n", blk_device);
+		return NULL;
+	}
+
+	blkid_free_probe(pr);
+
+	return type;
+}

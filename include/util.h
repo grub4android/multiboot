@@ -18,4 +18,5 @@ int do_exec(char **args);
 int createRawImage(const char *source, const char *target);
 int set_loop(char *device, char *file, int ro);
 int copy_file(char *source, char *target);
+const char *get_fstype(const char *blk_device);
 #endif

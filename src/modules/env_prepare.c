@@ -144,6 +144,7 @@ static int ep_late_init(struct module_data *data)
 	char buf[PATH_MAX];
 	struct stat sb;
 	const char *mount_data = NULL;
+	const char *fstype = NULL;
 
 	DEBUG("%s\n", __func__);
 
@@ -179,16 +180,21 @@ static int ep_late_init(struct module_data *data)
 			goto finish;
 		}
 	}
+	// get fstype
+	fstype = get_fstype(data->multiboot_device);
+	if (!fstype)
+		fstype = "ext4";
+
 	// minivold is on ramdisk
 	if (data->bootmode == BOOTMODE_RECOVERY && needs_context(data)) {
 		DEBUG("minivold: mount with sdcard context\n");
 		mount_data = SOURCE_MOUNT_DATA;
 	}
 	// mount source partition
-	// TODO use libblkid to detect the filesystem
-	check_fs(data->multiboot_device, "ext4", PATH_MOUNTPOINT_SOURCE);
+	check_fs(data->multiboot_device, (char *)fstype,
+		 PATH_MOUNTPOINT_SOURCE);
 	if (util_mount
-	    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, "ext4", 0,
+	    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, fstype, 0,
 	     mount_data)) {
 		kperror("mount(multiboot_device)");
 		rc = -1;
@@ -199,7 +205,7 @@ static int ep_late_init(struct module_data *data)
 		DEBUG("vold: remount with sdcard context\n");
 		umount(PATH_MOUNTPOINT_SOURCE);
 		if (mount
-		    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, "ext4", 0,
+		    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, fstype, 0,
 		     SOURCE_MOUNT_DATA)) {
 			kperror("mount(multiboot_device, context)");
 			rc = -1;

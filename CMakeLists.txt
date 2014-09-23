@@ -30,7 +30,8 @@ set_property(TARGET init PROPERTY INCLUDE_DIRECTORIES
 	${TRACY_SRC_DIR}
 	${TRACY_BIN_DIR}/include
 	${CMAKE_SOURCE_DIR}/include
+	${CMAKE_SOURCE_DIR}/lib/libblkid
 )
-target_link_libraries(init tracy pthread)
+target_link_libraries(init tracy pthread blkid)
 
-
+add_subdirectory(lib/libblkid)

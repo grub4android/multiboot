@@ -20,6 +20,7 @@
 #include <lib/fs_mgr.h>
 #include <lib/uevent.h>
 #include <lib/klog.h>
+#include <blkid.h>
 #include <util.h>
 #include <modules.h>
 
