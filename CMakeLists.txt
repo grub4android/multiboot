@@ -8,7 +8,11 @@ set(CMAKE_C_FLAGS "-Wall -Wextra -Werror -Wshadow -fPIC -static-libgcc -Wl,-stat
 # static libs
 ADD_LIBRARY(tracy STATIC IMPORTED)
 SET_TARGET_PROPERTIES(tracy PROPERTIES
-    IMPORTED_LOCATION ${TRACY_BIN_DIR}/libtracy.a)
+	IMPORTED_LOCATION ${TRACY_BIN_DIR}/libtracy.a)
+
+ADD_LIBRARY(selinux STATIC IMPORTED)
+SET_TARGET_PROPERTIES(selinux PROPERTIES
+	IMPORTED_LOCATION ${SELINUX_BIN_DIR}/libselinux.a)
 
 # main
 add_executable(init
@@ -25,13 +29,17 @@ add_executable(init
 	lib/uevent.c
 	lib/cmdline.c
 	lib/fs_mgr/fs_mgr.c
+
+	lib/fs/fs.c
+	lib/fs/fstypes/ext2.c
 )
 set_property(TARGET init PROPERTY INCLUDE_DIRECTORIES
 	${TRACY_SRC_DIR}
 	${TRACY_BIN_DIR}/include
+	${SELINUX_SRC_DIR}/include
 	${CMAKE_SOURCE_DIR}/include
 	${CMAKE_SOURCE_DIR}/lib/libblkid
 )
-target_link_libraries(init tracy pthread blkid)
+target_link_libraries(init tracy pthread blkid selinux)
 
 add_subdirectory(lib/libblkid)

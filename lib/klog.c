@@ -45,6 +45,11 @@ void klog_init(void)
 		if (klog_fd < 0)
 			return;
 		fcntl(klog_fd, F_SETFD, FD_CLOEXEC);
+
+		// redirect pipes to kmsg
+		dup2(klog_fd, fileno(stdout));
+		dup2(klog_fd, fileno(stderr));
+
 		unlink(name);
 	}
 }

@@ -1,15 +1,14 @@
 #include <common.h>
 
 #define MAX_PARAMETERS 64
-#define FILE_FSTAB "/multiboot/fstab"
+#define FILE_FSTAB "/bootloader/multiboot/etc/fstab"
 #define FSTAB_PREFIX "fstab."
 #define FSTAB_RECOVERY "/etc/recovery.fstab"
 #define FILE_RECOVERY_BINARY "/sbin/recovery"
 
 static struct module_data module_data;
 
-static bool vold_only = false;
-static bool late_init_done = false;
+static int prepare_fstab(void);
 
 static int run_init(struct tracy *tracy)
 {
@@ -68,7 +67,9 @@ static void import_kernel_nv(char *name)
 			module_data.multiboot_path = NULL;
 			return;
 		}
-		module_data.multiboot_device = strdup(buf);
+		module_data.multiboot_device.blk_device = strdup(buf);
+		module_data.multiboot_device.mount_point =
+		    PATH_MOUNTPOINT_SOURCE;
 
 		module_data.multiboot_enabled = true;
 	}
@@ -93,7 +94,9 @@ static void import_kernel_nv(char *name)
 			module_data.grub_path = NULL;
 			return;
 		}
-		module_data.grub_device = strdup(buf);
+
+		module_data.grub_device.blk_device = strdup(buf);
+		module_data.grub_device.mount_point = PATH_MOUNTPOINT_GRUB;
 	}
 
 	if (!strcmp(name, "multiboot.2ndstage")) {
@@ -136,12 +139,19 @@ static int load_multiboot_fstab(void)
 		    || !strcmp(mbfstab->recs[i].fs_type, "ext4")
 		    || !strcmp(mbfstab->recs[i].fs_type, "f2fs")) {
 			// get directory
-			sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s",
-				module_data.multiboot_path,
-				mbfstab->recs[i].mount_point);
+			snprintf(buf, ARRAY_SIZE(buf),
+				 PATH_MOUNTPOINT_SOURCE "%s%s",
+				 module_data.multiboot_path,
+				 mbfstab->recs[i].mount_point);
 
+			// create loop device
+			char *loopdev = make_loop(NULL);
+			if (!loopdev) {
+				return -1;
+			}
 			// set bind directory as device
-			mbfstab->recs[i].replacement_device = strdup(buf);
+			mbfstab->recs[i].replacement_device = strdup(buf);	// bind source
+			mbfstab->recs[i].stub_device = loopdev;
 			mbfstab->recs[i].replacement_bind = 1;
 		}
 		// fsimage mount
@@ -152,7 +162,7 @@ static int load_multiboot_fstab(void)
 				return -1;
 			}
 			// set loop dev as device
-			mbfstab->recs[i].replacement_device = loopdev;
+			mbfstab->recs[i].replacement_device = loopdev;	// mount device
 			mbfstab->recs[i].replacement_bind = 0;
 		}
 	}
@@ -232,12 +242,6 @@ static int system_is_recovery(void)
 	return !stat(FILE_RECOVERY_BINARY, &sb);
 }
 
-static int can_init(void)
-{
-	struct stat sb;
-	return !stat("/dev/block", &sb);
-}
-
 static int setup(void)
 {
 	int rc = 0;
@@ -255,6 +259,37 @@ static int setup(void)
 	util_mount("tmpfs", PATH_MOUNTPOINT_DEV, "tmpfs", MS_NOSUID,
 		   "mode=0755");
 
+	// basic /dev nodes
+	if (mknod(PATH_MOUNTPOINT_DEV "/zero", S_IFCHR | 0666, makedev(1, 5))) {
+		kperror("mknod");
+		return -1;
+	}
+	// make stubfs dir
+	if (mkpath(PATH_MOUNTPOINT_STUBFS, S_IRWXU | S_IRWXG | S_IRWXO)) {
+		kperror("mkpath");
+		return -1;
+	}
+	// mount procfs
+	mkdir("/proc", 0755);
+	mount("proc", "/proc", "proc", 0, NULL);
+
+	// parse cmdline
+	import_kernel_cmdline(import_kernel_nv);
+
+	INFO("bootmode=%s\n", strbootmode(module_data.bootmode));
+	INFO("multiboot_enabled=%d\n", module_data.multiboot_enabled);
+	INFO("sndstage_enabled=%d\n", module_data.sndstage_enabled);
+	INFO("multiboot_device=%s\n", module_data.multiboot_device.blk_device);
+	INFO("multiboot_path=%s\n", module_data.multiboot_path);
+	INFO("grub_device=%s\n", module_data.grub_device.blk_device);
+	INFO("grub_path=%s\n", module_data.grub_path);
+
+	// we don't need any patching or tracing
+	if (!module_data.multiboot_enabled && !module_data.sndstage_enabled) {
+		goto unmount_procfs;
+	}
+	// !MULTIBOOT && !2NDSTAGE IS IMPOSSIBLE FROM HERE
+
 	// mount sysfs
 	mkdir("/sys", 0755);
 	mount("sysfs", "/sys", "sysfs", 0, NULL);
@@ -268,30 +303,14 @@ static int setup(void)
 	// unmount sysfs
 	umount("/sys");
 
-	// mount procfs
-	mkdir("/proc", 0755);
-	mount("proc", "/proc", "proc", 0, NULL);
+	// setup /multiboot/dev/block
+	uevent_create_nodes(module_data.block_info, PATH_MOUNTPOINT_DEV);
 
-	// parse cmdline
-	import_kernel_cmdline(import_kernel_nv);
-
-	INFO("bootmode=%s\n", strbootmode(module_data.bootmode));
-	INFO("multiboot_enabled=%d\n", module_data.multiboot_enabled);
-	INFO("sndstage_enabled=%d\n", module_data.sndstage_enabled);
-	INFO("multiboot_device=%s\n", module_data.multiboot_device);
-	INFO("multiboot_path=%s\n", module_data.multiboot_path);
-	INFO("grub_device=%s\n", module_data.grub_device);
-	INFO("grub_path=%s\n", module_data.grub_path);
-
-	// we don't need any patching
-	if (!module_data.multiboot_enabled && !module_data.sndstage_enabled) {
-		goto unmount_procfs;
-	}
 	// get grub blockinfo
-	if (module_data.grub_device && module_data.grub_path) {
+	if (module_data.grub_device.blk_device && module_data.grub_path) {
 		module_data.grub_blockinfo =
 		    get_blockinfo_for_path(module_data.block_info,
-					   module_data.grub_device);
+					   module_data.grub_device.blk_device);
 		if (!module_data.grub_blockinfo) {
 			rc = -1;
 			goto unmount_procfs;
@@ -313,6 +332,11 @@ static int setup(void)
 		rc = -1;
 		goto unmount_procfs;
 	}
+	// fill fstabs with more info
+	if (prepare_fstab()) {
+		rc = -1;
+		goto unmount_procfs;
+	}
 	// fstab init
 	module_data.initstage = INITSTAGE_FSTAB;
 	if (modules_call_fstab_init(&module_data)) {
@@ -325,30 +349,41 @@ unmount_procfs:
 	// unmount procfs
 	umount("/proc");
 
+	// mount private procfs for tracy
+	mkdir("/multiboot/proc", 0755);
+	mount("proc", "/multiboot/proc", "proc", 0, NULL);
+
 	return rc;
+}
+
+static int translate_fstab_rec(struct fstab_rec *rec)
+{
+	char devname_real[PATH_MAX + 1];
+
+	if (uevent_realpath
+	    (module_data.block_info, rec->blk_device, devname_real) != NULL) {
+		free(rec->blk_device);
+		rec->blk_device = strdup(devname_real);
+	}
+
+	if (uevent_stat
+	    (module_data.block_info, rec->blk_device, &rec->statbuf) < 0)
+		WARNING("%s: couldn't stat %s\n", __func__, rec->blk_device);
+	else {
+		dev_t dev = rec->statbuf.st_rdev;
+		DEBUG("%s: %s: major=%u minor=%u\n",
+		      __func__, rec->blk_device, major(dev), minor(dev));
+	}
+
+	return 0;
 }
 
 static int translate_fstab_paths(struct fstab *fstab)
 {
 	int i;
-	char devname_real[PATH_MAX + 1];
 
 	for (i = 0; i < fstab->num_entries; i++) {
-		if (realpath(fstab->recs[i].blk_device, devname_real) != NULL) {
-			free(fstab->recs[i].blk_device);
-			fstab->recs[i].blk_device = strdup(devname_real);
-		}
-
-		if (stat(fstab->recs[i].blk_device, &fstab->recs[i].statbuf) <
-		    0)
-			WARNING("%s: couldn't stat %s\n", __func__,
-				fstab->recs[i].blk_device);
-		else {
-			dev_t dev = fstab->recs[i].statbuf.st_rdev;
-			DEBUG("%s: %s: major=%u minor=%u\n",
-			      __func__, fstab->recs[i].blk_device,
-			      major(dev), minor(dev));
-		}
+		translate_fstab_rec(&fstab->recs[i]);
 	}
 
 	return 0;
@@ -358,9 +393,30 @@ static int prepare_fstab(void)
 {
 	unsigned i;
 
+	if (module_data.multiboot_path) {
+		// source device
+		translate_fstab_rec(&module_data.multiboot_device);
+		module_data.multiboot_device.replacement_bind = 1;
+		module_data.multiboot_device.replacement_device =
+		    strdup(PATH_MOUNTPOINT_SOURCE);
+		module_data.multiboot_device.stub_device =
+		    strdup(module_data.multiboot_device.blk_device);
+	}
+
+	if (module_data.grub_path) {
+		// grub device
+		translate_fstab_rec(&module_data.grub_device);
+		module_data.grub_device.replacement_bind = 1;
+		module_data.grub_device.replacement_device =
+		    strdup(PATH_MOUNTPOINT_GRUB);
+		module_data.grub_device.stub_device =
+		    strdup(module_data.grub_device.blk_device);
+	}
+	// multiboot fstab
 	if (translate_fstab_paths(module_data.multiboot_fstab))
 		return -1;
 
+	// ROM fstabs
 	for (i = 0; i < module_data.target_fstabs_count; i++) {
 		if (translate_fstab_paths(module_data.target_fstabs[i]))
 			return -1;
@@ -369,50 +425,76 @@ static int prepare_fstab(void)
 	return 0;
 }
 
-static int hook_mount(struct tracy_event *e)
+static void multiboot_child_create(struct tracy_child *child)
 {
-	int rc = TRACY_HOOK_CONTINUE;
+	DEBUG("%s: %d\n", __func__, child->pid);
 
-	// check if we can init now
-	if (!late_init_done && can_init()) {
-		// fill fstabs with more info
-		if (prepare_fstab()) {
-			rc = TRACY_HOOK_ABORT;
-			goto finish;
-		}
-		// late init
-		module_data.initstage = INITSTAGE_LATE;
-		if (modules_call_late_init(&module_data)) {
-			ERROR("error in late_init!\n");
-			rc = TRACY_HOOK_ABORT;
-			goto finish;
-		}
-		late_init_done = true;
+	// just in case we have the data already
+	if (child->custom)
+		return;
 
-		// WORKAROUND: we got the context-requirement via a shellscript
-		//             and can stop tracing completely now.
-		if (vold_only) {
-			rc = TRACY_HOOK_STOP;
-			goto finish;
-		}
-
-		module_data.initstage = INITSTAGE_HOOK;
+	// allocate
+	child->custom = malloc(sizeof(struct multiboot_child_data));
+	if (!child->custom) {
+		ERROR("Couldn't allocate custom child mem!\n");
 	}
-	// not ready yet
-	if (!late_init_done)
-		goto finish;
+	// initialize
+	struct multiboot_child_data *mbc = child->custom;
+	memset(child->custom, 0, sizeof(mbc[0]));
 
-	// hook_mount
-	rc = modules_call_hook_mount(&module_data, e);
-
-finish:
-	return rc;
+	// tracy_child_create
+	if (modules_call_tracy_child_create(&module_data, child)) {
+		ERROR("Error in tracy_child_create!\n");
+		tracy_quit(module_data.tracy, 1);
+	}
 }
 
-int main(void)
+static void multiboot_child_destroy(struct tracy_child *child)
+{
+	DEBUG("%s: %d\n", __func__, child->pid);
+
+	// nothing to do here
+	if (!child->custom)
+		return;
+
+	struct multiboot_child_data *mbc = child->custom;
+
+	// tracy_child_destroy
+	if (modules_call_tracy_child_destroy(&module_data, child)) {
+		ERROR("Error in tracy_child_destroy!\n");
+		tracy_quit(module_data.tracy, 1);
+	}
+	// free
+	free(mbc);
+	child->custom = NULL;
+}
+
+static void usr1_sighandler(int sig, siginfo_t * siginfo, void *context)
+{
+	(void)(sig);
+	(void)(context);
+
+	// attach
+	if (!tracy_attach(module_data.tracy, siginfo->si_pid)) {
+		kperror("tracy_attach");
+		return;
+	}
+}
+
+int main(int argc, char **argv)
 {
 	struct tracy *tracy;
-	long tracy_opt = TRACY_MEMORY_FALLBACK;
+	long tracy_opt = TRACY_MEMORY_FALLBACK | TRACY_WORKAROUND_ARM_7475_1;
+
+	// VOLDWRAPPER
+	if (argc == 2 && !strcmp(argv[1], "voldwrapper")) {
+		kill(1, SIGUSR1);
+
+		char *newargv[] = { "/system/bin/vold", NULL };
+		execvp(newargv[0], newargv);
+	}
+	// TODO check if there is a better way
+	unlink("/init.recovery.aries.rc");
 
 	// clear module_data    
 	memset(&module_data, 0, sizeof(module_data));
@@ -435,39 +517,46 @@ int main(void)
 	// !MULTIBOOT && !2NDSTAGE IS IMPOSSIBLE FROM HERE
 
 	// tracy init
-	if (module_data.bootmode == BOOTMODE_RECOVERY)
-		tracy_opt |= TRACY_TRACE_CHILDREN;
+	tracy_opt |= TRACY_TRACE_CHILDREN;
 	module_data.tracy = tracy = tracy_init(tracy_opt);
 
-	// hook mount
-	if (tracy_set_hook(tracy, "mount", TRACY_ABI_NATIVE, hook_mount)) {
-		ERROR("Could not hook mount\n");
+	tracy->se.child_create = &multiboot_child_create;
+	tracy->se.child_destroy = &multiboot_child_destroy;
+
+	// tracy init
+	module_data.initstage = INITSTAGE_TRACY;
+	if (modules_call_tracy_init(&module_data)) {
+		ERROR("error in tracy_init!\n");
 		return EXIT_FAILURE;
-	}
-	// RECOVERY
-	if (module_data.bootmode == BOOTMODE_RECOVERY) {
-		// multiboot-recovery gets full redirection
-		if (module_data.multiboot_enabled) {
-			module_data.initstage = INITSTAGE_TRACY;
-			// tracy init
-			if (modules_call_tracy_init(&module_data)) {
-				ERROR("error in tracy_init!\n");
-				return EXIT_FAILURE;
-			}
-		} else if (module_data.sndstage_enabled) {
-			vold_only = true;
-		}
-		// else is impossible
-	}
-	// ANDROID
-	else {
-		vold_only = true;
 	}
 
-	// run and trace /init
-	if (run_init(tracy)) {
-		kperror("tracy_exec");
-		return EXIT_FAILURE;
+	if (module_data.bootmode == BOOTMODE_RECOVERY) {
+		// run and trace /init
+		if (run_init(tracy)) {
+			kperror("tracy_exec");
+			return EXIT_FAILURE;
+		}
+	} else {
+		// start init in child process
+		pid_t pid = fork();
+		if (pid == 0) {
+			if (run_init(NULL)) {
+				kperror("run_init");
+				return EXIT_FAILURE;
+			}
+		}
+	}
+
+	// setup "traceme" signal handler
+	if (module_data.bootmode != BOOTMODE_RECOVERY) {
+		struct sigaction act;
+		memset(&act, 0, sizeof(act));
+		act.sa_sigaction = &usr1_sighandler;
+		act.sa_flags = SA_SIGINFO;
+		if (sigaction(SIGUSR1, &act, NULL) < 0) {
+			kperror("sigaction");
+			return EXIT_FAILURE;
+		}
 	}
 	// Main event-loop
 	tracy_main(tracy);
@@ -476,7 +565,7 @@ int main(void)
 	tracy_free(tracy);
 
 	// wait for all childs to finish - that hopefully will never happen
-	DEBUG("TRACY EXIT. waiting now...\n");
+	ERROR("TRACY EXIT. waiting now...\n");
 	while (waitpid(-1, NULL, 0)) {
 		if (errno == ECHILD) {
 			break;

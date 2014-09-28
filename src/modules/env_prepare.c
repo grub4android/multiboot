@@ -1,219 +1,77 @@
 #include <common.h>
 
-#define FILE_VOLD_ANDROID "/system/bin/vold"
-#define FILE_VOLD_RECOVERY "/sbin/minivold"
-#define SOURCE_MOUNT_DATA "context=u:object_r:sdcard_external:s0"
-#define CONTEXT_ID_FILE "/multiboot/.needs_context"
-
-static int mount_grub_partition(struct module_data *data)
+/*
+ * 1) mount grub root (if we don't use a ramdisk)
+ * 2) setup /multiboot
+ * 3) mount source partition
+ */
+static int ep_early_init(struct module_data *data)
 {
-	int i = 0;
-	int ret = -1;
-	struct stat sb_grub_part;
-	struct fstab *fstab;
+	int rc = 0;
+	char part_grub[PATH_MAX];
+	char part_source[PATH_MAX];
 
-	// get target fstab
-	if (data->target_fstabs_count < 1) {
-		ERROR("%s: no fstab\n", __func__);
-		return ret;
-	}
-	fstab = data->target_fstabs[0];
-
-	// stat grub partition
-	if (stat(data->grub_device, &sb_grub_part)) {
-		ERROR("%s: couldn't stat grubdev\n", __func__);
-		return ret;
-	}
-
-	for (i = 0; i < fstab->num_entries; i++) {
-		// compare both partitions
-		if (sb_grub_part.st_rdev != fstab->recs[i].statbuf.st_rdev)
-			continue;
-
-		// First check the filesystem if requested
-		if (fs_mgr_is_wait(&fstab->recs[i])) {
-			check_fs(fstab->recs[i].blk_device,
-				 fstab->recs[i].fs_type,
-				 fstab->recs[i].mount_point);
-		}
-		// mount it to /multiboot/grub now
-		if (util_mount
-		    (fstab->recs[i].blk_device, PATH_MOUNTPOINT_GRUB,
-		     fstab->recs[i].fs_type, fstab->recs[i].flags,
-		     fstab->recs[i].fs_options)) {
-			WARNING
-			    ("Cannot mount filesystem on %s at %s options: %s error: %s\n",
-			     fstab->recs[i].blk_device, PATH_MOUNTPOINT_GRUB,
-			     fstab->recs[i].fs_options, strerror(errno));
-			continue;
-		} else {
-			ret = 0;
-			goto out;
-		}
-	}
-
-	// TODO: search for it in multiboot fstab
-
-	// We didn't find a match, say so and return an error
-	ERROR("Cannot find mount point %s in fstab\n",
-	      fstab->recs[i].mount_point);
-
-out:
-	return ret;
-}
-
-int needs_context(struct module_data *data)
-{
-	static int has_cache = 0;
-	static int cache_ret = 0;
-
-	if (has_cache)
-		return cache_ret;
-
-	char *par[64];
-	int i = 0;
-	char buf[PATH_MAX];
-
-	// tool
-	par[i++] = "/multiboot/busybox";
-	par[i++] = "sh";
-	par[i++] = "/multiboot/check_sdcard_context.sh";
-
-	// args
-	par[i++] = SOURCE_MOUNT_DATA;
-	if (data->bootmode == BOOTMODE_RECOVERY) {
-		par[i++] = FILE_VOLD_RECOVERY;
-	} else {
-		sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s/%s",
-			data->multiboot_path, FILE_VOLD_ANDROID);
-		par[i++] = buf;
-	}
-	par[i++] = CONTEXT_ID_FILE;
-
-	// end
-	par[i++] = (char *)0;
-
-	do_exec(par);
-
-	struct stat sb;
-	cache_ret = !stat("/multiboot/.needs_context", &sb);
-	has_cache = 1;
-	return cache_ret;
-}
-
-static int sndstage_setup_partition(struct module_data *data, const char *name)
-{
-	char buf[PATH_MAX];
-	struct stat sb;
-
-	struct fstab_rec *rec =
-	    fs_mgr_get_entry_for_mount_point(data->multiboot_fstab, name);
-	if (rec == NULL) {
-		ERROR("Couldn't find %s in mbfstab\n", name);
-		return -1;
-	}
-	// create filesystem image
-	sprintf(buf, PATH_MOUNTPOINT_GRUB "%s/..%s.img", data->grub_path,
-		rec->mount_point);
-	if (stat(buf, &sb)) {
-		if (createRawImage(rec->blk_device, buf)) {
-			kperror("createRawImage");
-			return -1;
-		}
-	}
-	// delete original node
-	if (unlink(rec->blk_device)) {
-		ERROR("Couldn't delete %s!\n", rec->blk_device);
-		return -1;
-	}
-	// create loop device node
-	char *loopdev = make_loop(rec->blk_device);
-	if (!loopdev) {
-		kperror("make_loop");
-		return -1;
-	}
-	// setup loop
-	if (set_loop(rec->blk_device, buf, 0))
-		kperror("set_loop");
-	return 0;
-}
-
-static int ep_late_init(struct module_data *data)
-{
-	int i, rc = 0;
-	char buf[PATH_MAX];
-	struct stat sb;
-	const char *mount_data = NULL;
-	const char *fstype = NULL;
-
-	DEBUG("%s\n", __func__);
-
-	// mount grub part for bootrec redirection
-	if (data->sndstage_enabled) {
-		// mount grub_dir
-		if (data->grub_device && data->grub_path) {
-			if (mount_grub_partition(data)) {
-				ERROR("couldn't mount grubdev\n");
-				rc = -1;
-				goto finish;
-			}
-			// create grub directory
-			sprintf(buf, PATH_MOUNTPOINT_GRUB "%s",
-				data->grub_path);
-			if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
-				kperror("mkpath");
-			}
-			// prepare partition images
-			if (!data->multiboot_enabled
-			    && sndstage_setup_partition(data, "/boot")) {
-				rc = -1;
-				goto finish;
-			}
-			if (sndstage_setup_partition(data, "/recovery")) {
-				rc = -1;
-				goto finish;
-			}
-		}
-
-		if (!data->multiboot_enabled) {
-			INFO("this isn't multiboot - stop here.\n");
+	// mount grub device
+	if (data->grub_device.blk_device != NULL && data->grub_path != NULL) {
+		// mount grub partition
+		snprintf(part_grub, sizeof(part_grub), "/multiboot%s",
+			 data->grub_device.blk_device);
+		if (util_mount(part_grub, PATH_MOUNTPOINT_GRUB, NULL, 0, NULL)) {
+			kperror("mount(grub_device)");
+			rc = -1;
 			goto finish;
 		}
-	}
-	// get fstype
-	fstype = get_fstype(data->multiboot_device);
-	if (!fstype)
-		fstype = "ext4";
-
-	// minivold is on ramdisk
-	if (data->bootmode == BOOTMODE_RECOVERY && needs_context(data)) {
-		DEBUG("minivold: mount with sdcard context\n");
-		mount_data = SOURCE_MOUNT_DATA;
-	}
-	// mount source partition
-	check_fs(data->multiboot_device, (char *)fstype,
-		 PATH_MOUNTPOINT_SOURCE);
-	if (util_mount
-	    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, fstype, 0,
-	     mount_data)) {
-		kperror("mount(multiboot_device)");
-		rc = -1;
-		goto finish;
-	}
-	// android's vold is on /system that's why we couldn't check it before mounting
-	if (data->bootmode != BOOTMODE_RECOVERY && needs_context(data)) {
-		DEBUG("vold: remount with sdcard context\n");
-		umount(PATH_MOUNTPOINT_SOURCE);
-		if (mount
-		    (data->multiboot_device, PATH_MOUNTPOINT_SOURCE, fstype, 0,
-		     SOURCE_MOUNT_DATA)) {
-			kperror("mount(multiboot_device, context)");
+		// bind mount subfolder
+		snprintf(part_grub, sizeof(part_grub),
+			 PATH_MOUNTPOINT_GRUB "/%s/..", data->grub_path);
+		if (util_mount
+		    (part_grub, PATH_MOUNTPOINT_BOOTLOADER, NULL, MS_BIND,
+		     NULL)) {
+			kperror("mount(grub_device|bind)");
 			rc = -1;
 			goto finish;
 		}
 	}
+	// create local copy of multiboot files
+	// the original filesystem could be mounted with noexec
+	util_copy(PATH_MOUNTPOINT_BOOTLOADER "/multiboot", "/", true, true);
+	chmod(PATH_MULTIBOOT_BUSYBOX, 0700);	// in case we lost permission
+
+	// update to more secure permissions
+	util_chmod("/multiboot/etc", "0600", true);
+	util_chmod("/multiboot/sbin", "0700", true);
+
+	// convert source part
+	snprintf(part_source, sizeof(part_source), "/multiboot%s",
+		 data->multiboot_device.blk_device);
+
+	// mount source partition
+	if (util_mount(part_source, PATH_MOUNTPOINT_SOURCE, NULL, 0, NULL)) {
+		kperror("mount(multiboot_device)");
+		rc = -1;
+		goto finish;
+	}
+	// setup voldwrapper
+	if (data->bootmode != BOOTMODE_RECOVERY)
+		patch_vold();
+
+finish:
+	return rc;
+}
+
+/*
+ * setup multiboot diretories and images in case they don't exist
+ */
+static int ep_fstab_init(struct module_data *data)
+{
+	int i, rc = 0;
+	char part_source[PATH_MAX];
+	char buf[PATH_MAX];
+	struct stat sb;
+
 	// create main mb directory
-	sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s", data->multiboot_path);
+	snprintf(buf, ARRAY_SIZE(buf), PATH_MOUNTPOINT_SOURCE "%s",
+		 data->multiboot_path);
 	if (mkpath(buf, S_IRWXU | S_IRWXG | S_IRWXO)) {
 		kperror("mkpath");
 		rc = -1;
@@ -234,16 +92,40 @@ static int ep_late_init(struct module_data *data)
 				rc = -1;
 				goto finish;
 			}
+			// create stub filesystem image
+			snprintf(buf, ARRAY_SIZE(buf),
+				 PATH_MOUNTPOINT_STUBFS "%s.img",
+				 mbfstab->recs[i].mount_point);
+			if (stat(buf, &sb)) {
+				if (createRawImage(NULL, buf, 2048 * 5)) {	// 5MB
+					kperror("createRawImage");
+					rc = -1;
+					goto finish;
+				}
+			}
+			// setup loop
+			if (set_loop(mbfstab->recs[i].stub_device, buf, 0))
+				kperror("set_loop");
+
+			// format
+			// TODO: detect filesystem and use correct mkfs tool
+			if (make_ext4fs(mbfstab->recs[i].stub_device))
+				kperror("make_ext4fs");
 		}
 
 		else {
 			// create filesystem image
-			sprintf(buf, PATH_MOUNTPOINT_SOURCE "%s%s.img",
-				data->multiboot_path,
-				mbfstab->recs[i].mount_point);
+			snprintf(buf, ARRAY_SIZE(buf),
+				 PATH_MOUNTPOINT_SOURCE "%s%s.img",
+				 data->multiboot_path,
+				 mbfstab->recs[i].mount_point);
 			if (stat(buf, &sb)) {
-				if (createRawImage
-				    (mbfstab->recs[i].blk_device, buf)) {
+				// convert source part
+				snprintf(part_source, sizeof(part_source),
+					 "/multiboot%s",
+					 mbfstab->recs[i].blk_device);
+
+				if (createRawImage(part_source, buf, ULONG_MAX)) {
 					kperror("createRawImage");
 					rc = -1;
 					goto finish;
@@ -261,7 +143,8 @@ finish:
 }
 
 static struct module module_env_prepare = {
-	.late_init = ep_late_init,
+	.early_init = ep_early_init,
+	.fstab_init = ep_fstab_init,
 };
 
 module_add(module_env_prepare);

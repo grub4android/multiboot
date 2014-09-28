@@ -20,9 +20,6 @@
 #include <lib/klog.h>
 #include <lib/fs_mgr.h>
 
-#define INFO(x...)    KLOG_INFO("fs_mgr", x)
-#define ERROR(x...)   KLOG_ERROR("fs_mgr", x)
-
 #define WAIT_TIMEOUT 20
 
 /* fstab has the following format:
@@ -70,7 +67,7 @@
 #define MF_SWAPPRIO     0x80
 #define MF_ZRAMSIZE     0x100
 #define MF_VERIFY       0x200
-#define MF_MULTIBOOT    0x300
+#define MF_MULTIBOOT    0x400
 /*
  * There is no emulated sdcard daemon running on /data/media on this device,
  * so treat the physical SD card as the only external storage device,

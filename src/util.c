@@ -9,7 +9,7 @@ char *get_process_name_by_pid(const int pid)
 {
 	char *name = (char *)calloc(1024, sizeof(char));
 	if (name) {
-		sprintf(name, "/proc/%d/cmdline", pid);
+		snprintf(name, 1024, "/proc/%d/cmdline", pid);
 		FILE *f = fopen(name, "r");
 		if (f) {
 			size_t size;
@@ -70,10 +70,30 @@ int util_mount(const char *source, const char *target,
 	       const char *filesystemtype, unsigned long mountflags,
 	       const void *data)
 {
-
 	if (mkpath(target, S_IRWXU | S_IRWXG | S_IRWXO)) {
 		return -1;
 	}
+	// get fstype of source partition
+	if (!filesystemtype && !(mountflags & MS_BIND)) {
+		filesystemtype = get_fstype(source);
+		if (!filesystemtype)
+			filesystemtype = "ext4";
+
+	}
+
+	char *__source = source ? strdup(source) : NULL;
+	char *__filesystemtype = filesystemtype ? strdup(filesystemtype) : NULL;
+	char *__target = target ? strdup(target) : NULL;
+
+	if (!(mountflags & MS_BIND))
+		check_fs(__source, __filesystemtype, __target);
+
+	if (__target)
+		free(__target);
+	if (__filesystemtype)
+		free(__filesystemtype);
+	if (__source)
+		free(__source);
 
 	return mount(source, target, filesystemtype, mountflags, data);
 }
@@ -86,7 +106,8 @@ char *make_loop(const char *path)
 	int minor = 255 - loops_created;
 
 	if (!path) {
-		sprintf(buf, PATH_MOUNTPOINT_DEV "/loop%d", minor);
+		snprintf(buf, ARRAY_SIZE(buf),
+			 PATH_MOUNTPOINT_DEV "/block/loop%d", minor);
 		path = buf;
 	}
 
@@ -187,7 +208,10 @@ char *get_patharg(struct tracy_child *child, long addr, int real)
 
 	// read string
 	memset(path, 0, len);
-	tracy_read_mem(child, path, (void *)addr, len);
+	if (tracy_read_mem(child, path, (void *)addr, len) < 0) {
+		kperror("tracy_read_mem");
+		return NULL;
+	}
 
 	if (real && !stat(path, &sb)) {
 		char *path_real = malloc(PATH_MAX);
@@ -277,34 +301,39 @@ int do_exec(char **args)
 	return status;
 }
 
-int createRawImage(const char *source, const char *target)
+int createRawImage(const char *source, const char *target, unsigned long blocks)
 {
-	unsigned long numblocks = get_blknum(source);
+	unsigned long numblocks = source ? get_blknum(source) : blocks;
 	char *par[64];
 	char buf[PATH_MAX];
 	int i = 0;
-	char *buf_of = NULL, *buf_bs = NULL, *buf_count = NULL;
+	char *buf_if = NULL, *buf_of = NULL, *buf_bs = NULL, *buf_count = NULL;
 	int rc;
 
 	// tool
-	par[i++] = "/multiboot/busybox";
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
 	par[i++] = "dd";
 
 	// input
-	par[i++] = "if=/dev/zero";
+	if (source) {
+		snprintf(buf, ARRAY_SIZE(buf), "if=%s", source);
+		buf_if = strdup(buf);
+		par[i++] = buf_if;
+	} else
+		par[i++] = "if=" PATH_MOUNTPOINT_DEV "/zero";
 
 	// output
-	sprintf(buf, "of=%s", target);
+	snprintf(buf, ARRAY_SIZE(buf), "of=%s", target);
 	buf_of = strdup(buf);
 	par[i++] = buf_of;
 
 	// blocksize
-	sprintf(buf, "bs=%d", block_size);
+	snprintf(buf, ARRAY_SIZE(buf), "bs=%d", block_size);
 	buf_bs = strdup(buf);
 	par[i++] = buf_bs;
 
 	// count
-	sprintf(buf, "count=%lu", numblocks);
+	snprintf(buf, ARRAY_SIZE(buf), "count=%lu", numblocks);
 	buf_count = strdup(buf);
 	par[i++] = buf_count;
 
@@ -315,6 +344,8 @@ int createRawImage(const char *source, const char *target)
 	rc = do_exec(par);
 
 	// cleanup
+	if (buf_if)
+		free(buf_if);
 	free(buf_of);
 	free(buf_bs);
 	free(buf_count);
@@ -328,7 +359,7 @@ int set_loop(char *device, char *file, int ro)
 	int i = 0;
 
 	// tool
-	par[i++] = "/multiboot/busybox";
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
 	par[i++] = "losetup";
 
 	// access mode
@@ -345,16 +376,65 @@ int set_loop(char *device, char *file, int ro)
 	return do_exec(par);
 }
 
-int copy_file(char *source, char *target)
+int util_copy(char *source, char *target, bool recursive, bool force)
 {
 	char *par[64];
 	int i = 0;
 
 	// tool
-	par[i++] = "/multiboot/busybox";
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
 	par[i++] = "cp";
+
+	if (recursive)
+		par[i++] = "-R";
+
+	if (force)
+		par[i++] = "-f";
+
 	par[i++] = source;
 	par[i++] = target;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
+
+int util_chmod(char *path, char *mode, bool recursive)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
+	par[i++] = "chmod";
+
+	if (recursive)
+		par[i++] = "-R";
+
+	par[i++] = mode;
+	par[i++] = path;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
+
+int format_path(char *path)
+{
+	char *par[64];
+	int i = 0;
+	char buf[PATH_MAX + 30];
+
+	snprintf(buf, ARRAY_SIZE(buf), PATH_MULTIBOOT_BUSYBOX " rm -Rf %s",
+		 path);
+
+	// tool
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
+	par[i++] = "sh";
+	par[i++] = "-c";
+	par[i++] = buf;
 
 	// end
 	par[i++] = (char *)0;
@@ -383,4 +463,118 @@ const char *get_fstype(const char *blk_device)
 	blkid_free_probe(pr);
 
 	return type;
+}
+
+int make_ext4fs(char *path)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = "/multiboot/sbin/mkfs.ext4";
+	par[i++] = path;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
+
+int check_fs_nomount(char *path)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = "/multiboot/sbin/e2fsck";
+	par[i++] = "-fy";
+	par[i++] = path;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
+
+int patch_vold(void)
+{
+	return sed_replace("/init.rc",
+			   "s/\\/system\\/bin\\/vold/\\/multiboot\\/sbin\\/init voldwrapper/g");
+}
+
+int sed_replace(const char *file, const char *regex)
+{
+	char *par[64];
+	int i = 0;
+
+	// tool
+	par[i++] = PATH_MULTIBOOT_BUSYBOX;
+	par[i++] = "sed";
+	par[i++] = "-i";
+	par[i++] = (char *)regex;
+	par[i++] = (char *)file;
+
+	// end
+	par[i++] = (char *)0;
+
+	return do_exec(par);
+}
+
+int dump_strings(const char *filename, char **result, int size, check_string cb)
+{
+	int c;
+	char *string = NULL;
+	int strsz = 0;
+	int count = 0;
+	int rc = 0;
+
+	// open file
+	FILE *file = fopen(filename, "rb");
+	if (!file)
+		return -1;
+
+	// initial buffer
+	strsz = 100;
+	string = malloc(strsz * sizeof(char));
+
+	do {
+		c = fgetc(file);
+		if (isprint(c) || c == '\t') {
+			// increase string size
+			count++;
+
+			// increase buffser size if necessary (+1 for 0 terminator)
+			if (count + 1 > strsz) {
+				strsz = count + 1;
+				string = realloc(string, strsz * sizeof(char));
+			}
+			// write char
+			string[count - 1] = (char)c;
+		}
+
+		else {
+			// end of string
+			if (count > 0) {
+				// add 0 terminator
+				string[count] = '\0';
+
+				if (rc < size) {
+					if (!cb || (cb && cb(string))) {
+						// add string to results
+						result[rc++] = strdup(string);
+					}
+				} else {
+					break;
+				}
+			}
+			// start new string
+			count = 0;
+		}
+	} while (c != EOF);
+
+	// close file
+	fclose(file);
+	file = NULL;
+
+	return rc;
 }

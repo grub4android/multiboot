@@ -58,6 +58,7 @@ extern "C" {
 		struct stat statbuf;
 		char *replacement_device;
 		int replacement_bind;
+		char *stub_device;
 
 		char *lun;
 	};

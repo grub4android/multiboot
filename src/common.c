@@ -8,5 +8,5 @@ void kperror(const char *message)
 		message = "";
 	}
 
-	ERROR("%s%s%s", message, sep, strerror(errno));
+	ERROR("%s%s%s\n", message, sep, strerror(errno));
 }

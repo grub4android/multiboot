@@ -56,11 +56,11 @@ static int add_uevent_entry(struct sys_block_info *info, const char *filename)
 			continue;
 
 		if (!strcmp(name, "MAJOR")) {
-			info->entries[index].major = getInt(value);
+			info->entries[index].linux_major = getInt(value);
 		} else if (!strcmp(name, "MINOR")) {
-			info->entries[index].minor = getInt(value);
+			info->entries[index].linux_minor = getInt(value);
 		} else if (!strcmp(name, "PARTN")) {
-			info->entries[index].mmc_minor = getInt(value);
+			info->entries[index].part_minor = getInt(value);
 		} else if (!strcmp(name, "DEVNAME")) {
 			info->entries[index].devname = strdup(value);
 		} else if (!strcmp(name, "PARTNAME")) {
@@ -76,13 +76,16 @@ static int add_uevent_entry(struct sys_block_info *info, const char *filename)
 		}
 	}
 
-	unsigned mmc_major, mmc_minor;
+	unsigned part_major, part_minor;
+	// MMC
 	if (sscanf
-	    (info->entries[index].devname, "mmcblk%up%u", &mmc_major,
-	     &mmc_minor) == 2) {
-		info->entries[index].mmc_major = mmc_major;
-		info->entries[index].mmc_minor = mmc_minor;
+	    (info->entries[index].devname, "mmcblk%up%u", &part_major,
+	     &part_minor) == 2) {
+		info->entries[index].part_major = part_major;
+		info->entries[index].part_minor = part_minor;
 	}
+	// TODO NAND
+
 	// close file
 	fclose(fp);
 
@@ -108,7 +111,8 @@ struct sys_block_info *get_block_devices(void)
 		if (dt->d_type != DT_LNK)
 			continue;
 
-		sprintf(buf, "%s/%s/uevent", path, dt->d_name);
+		snprintf(buf, ARRAY_SIZE(buf), "%s/%s/uevent", path,
+			 dt->d_name);
 		add_uevent_entry(info, buf);
 	}
 
@@ -140,7 +144,7 @@ struct sys_block_uevent *get_blockinfo_for_path(struct sys_block_info *info,
 						const char *path)
 {
 	char *name = NULL;
-	unsigned mmc_major, mmc_minor;
+	unsigned part_major, part_minor;
 	bool use_name = false;
 	int i;
 	struct sys_block_uevent *ret = NULL;
@@ -152,7 +156,7 @@ struct sys_block_uevent *get_blockinfo_for_path(struct sys_block_info *info,
 		free(tmp);
 		use_name = true;
 	} else
-	    if (sscanf(path, "/dev/block/mmcblk%up%u", &mmc_major, &mmc_minor)
+	    if (sscanf(path, "/dev/block/mmcblk%up%u", &part_major, &part_minor)
 		!= 2) {
 		printf("ERROR\n");
 		return NULL;
@@ -165,8 +169,8 @@ struct sys_block_uevent *get_blockinfo_for_path(struct sys_block_info *info,
 		    && !strcmp(event->partname, name)) {
 			ret = event;
 			break;
-		} else if (event->mmc_major == mmc_major
-			   && event->mmc_minor == mmc_minor) {
+		} else if (event->part_major == part_major
+			   && event->part_minor == part_minor) {
 			ret = event;
 			break;
 		}
@@ -176,4 +180,49 @@ struct sys_block_uevent *get_blockinfo_for_path(struct sys_block_info *info,
 		free(name);
 
 	return ret;
+}
+
+char *uevent_realpath(struct sys_block_info *info,
+		      const char *path, char *resolved_path)
+{
+	struct sys_block_uevent *bi = get_blockinfo_for_path(info, path);
+	if (!bi)
+		return NULL;
+
+	sprintf(resolved_path, "/dev/block/mmcblk%up%u", bi->part_major,
+		bi->part_minor);
+	return resolved_path;
+}
+
+int uevent_stat(struct sys_block_info *info, const char *path, struct stat *buf)
+{
+	struct sys_block_uevent *bi = get_blockinfo_for_path(info, path);
+	if (!bi)
+		return -1;
+
+	buf->st_dev = makedev(0, 5);
+	buf->st_rdev = makedev(bi->linux_major, bi->linux_minor);
+
+	return 0;
+}
+
+int uevent_create_nodes(struct sys_block_info *info, const char *path)
+{
+	int i;
+	char buf[PATH_MAX];
+
+	mkdir(PATH_MOUNTPOINT_DEV "/block", 0755);
+
+	for (i = 0; i < info->num_entries; i++) {
+		struct sys_block_uevent *event = &info->entries[i];
+
+		snprintf(buf, sizeof(buf), "%s/block/%s", path, event->devname);
+
+		if (mknod
+		    (buf, S_IFBLK | 0600,
+		     makedev(event->linux_major, event->linux_minor)))
+			kperror("mknod");
+	}
+
+	return 0;
 }
