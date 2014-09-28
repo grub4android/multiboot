@@ -1,4 +1,4 @@
-#include <modules.h>
+#include <common.h>
 
 #define MAX_MODULES 64
 
@@ -26,6 +26,7 @@ int modules_call_hook_mount(struct module_data *data, struct tracy_event *e)
 {
 	int i, rc = 0;
 
+	DEBUG("%s\n", __func__);
 	for (i = 0; i < modules_count && !rc; i++) {
 		if (modules[i] && modules[i]->hook_mount) {
 			rc = modules[i]->hook_mount(data, e);
@@ -40,6 +41,7 @@ int modules_call_##stage(struct module_data *data) \
 { \
 	int i, rc = 0; \
  \
+	DEBUG("%s\n", __func__); \
 	for (i = 0; i < modules_count && !rc; i++) { \
 		if (modules[i] && modules[i]->stage) { \
 			rc = modules[i]->stage(data); \
