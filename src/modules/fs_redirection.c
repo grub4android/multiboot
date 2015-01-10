@@ -464,6 +464,8 @@ static int hook_fcntl(struct tracy_event *e)
 	return rc;
 }
 
+static struct fstab_rec *asec_rec;
+
 static int hook_mount(struct tracy_event *e)
 {
 	struct tracy_sc_args a;
@@ -490,10 +492,14 @@ static int hook_mount(struct tracy_event *e)
 		      devname, mountpoint, (flags & MS_REMOUNT),
 		      (flags & MS_RDONLY));
 
-		// check if we need to redirect this partition
-		fstabrec = get_fstab_rec(devname);
-		if (!fstabrec) {
-			goto out;
+		if (!strcmp(mountpoint, "/mnt/secure/asec")) {
+			fstabrec = asec_rec;
+		} else {
+			// check if we need to redirect this partition
+			fstabrec = get_fstab_rec(devname);
+			if (!fstabrec) {
+				goto out;
+			}
 		}
 
 		DEBUG("hijack: mount %s on %s\n", devname, mountpoint);
@@ -573,6 +579,18 @@ static int fsr_tracy_init(struct module_data *data)
 	do_hook(fcntl64, hook_fcntl);
 	// mount
 	do_hook(mount, hook_mount);
+
+	// prepate asec_rec
+	asec_rec = calloc(sizeof(asec_rec[0]), 1);
+	asec_rec->replacement_bind = 0;
+	asec_rec->replacement_device = malloc(PATH_MAX);
+	snprintf(asec_rec->replacement_device, PATH_MAX,
+		 PATH_MOUNTPOINT_SOURCE "%s/android_secure",
+		 data->multiboot_path);
+
+	// create android_secure folder
+	mkpath(asec_rec->replacement_device, 0770);
+	chown(asec_rec->replacement_device, 1023, 1023);
 
 	return 0;
 }
