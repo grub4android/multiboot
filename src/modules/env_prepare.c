@@ -10,6 +10,8 @@ static int ep_early_init(struct module_data *data)
 	int rc = 0;
 	char part_grub[PATH_MAX];
 	char part_source[PATH_MAX];
+	char buf[PATH_MAX];
+	char buf2[PATH_MAX];
 
 	// mount grub device
 	if (data->grub_device.blk_device != NULL && data->grub_path != NULL) {
@@ -54,6 +56,26 @@ static int ep_early_init(struct module_data *data)
 	// setup voldwrapper
 	if (data->bootmode != BOOTMODE_RECOVERY)
 		patch_vold();
+
+	// ==== disable dualboot tools ====
+	// dualboot_init
+	snprintf(buf, ARRAY_SIZE(buf), "/init.%s.rc", data->hw_name);
+	snprintf(buf2, ARRAY_SIZE(buf2),
+		 "s/exec \\/sbin\\/dualboot_init .\\/fstab.%s//g",
+		 data->hw_name);
+	sed_replace(buf, buf2);
+	unlink("/sbin/dualboot_init");
+
+	// fstab loader
+	snprintf(buf2, ARRAY_SIZE(buf2), "s/fstab.%s.patched/fstab.%s/g",
+		 data->hw_name, data->hw_name);
+	sed_replace(buf, buf2);
+
+	// syspart_select
+	snprintf(buf, ARRAY_SIZE(buf), "/init.recovery.%s.rc", data->hw_name);
+	sed_replace(buf, "s/exec \\/sbin\\/syspart_select auto//g");
+	unlink("/sbin/syspart_select");
+	// ========
 
 finish:
 	return rc;

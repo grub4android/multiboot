@@ -116,6 +116,10 @@ static void import_kernel_nv(char *name)
 		}
 		klog_set_level(val);
 	}
+
+	if (!strcmp(name, "androidboot.hardware")) {
+		module_data.hw_name = strdup(value);
+	}
 }
 
 static int load_multiboot_fstab(void)
@@ -498,9 +502,6 @@ int main(int argc, char **argv)
 		char *newargv[] = { "/multiboot/bin/vold", NULL };
 		execvp(newargv[0], newargv);
 	}
-	// TODO check if there is a better way
-	unlink("/init.recovery.aries.rc");
-
 	// clear module_data    
 	memset(&module_data, 0, sizeof(module_data));
 	module_data.initstage = INITSTAGE_NONE;

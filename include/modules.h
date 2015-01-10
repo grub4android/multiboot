@@ -21,6 +21,7 @@ struct module_data {
 	bootmode_t bootmode;
 	bool multiboot_enabled;
 	bool sndstage_enabled;
+	char *hw_name;
 
 	char *multiboot_path;
 	struct fstab_rec multiboot_device;
