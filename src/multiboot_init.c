@@ -490,7 +490,12 @@ int main(int argc, char **argv)
 	if (argc == 2 && !strcmp(argv[1], "voldwrapper")) {
 		kill(1, SIGUSR1);
 
-		char *newargv[] = { "/system/bin/vold", NULL };
+		// create local copy of vold without file context
+		mkpath("/multiboot/bin", 0755);
+		util_copy("/system/bin/vold", "/multiboot/bin/vold", false,
+			  true);
+
+		char *newargv[] = { "/multiboot/bin/vold", NULL };
 		execvp(newargv[0], newargv);
 	}
 	// TODO check if there is a better way
