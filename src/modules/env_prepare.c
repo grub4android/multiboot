@@ -57,6 +57,11 @@ static int ep_early_init(struct module_data *data)
 	if (data->bootmode != BOOTMODE_RECOVERY)
 		patch_vold();
 
+	// visual recovery patches
+	else if (data->multiboot_enabled) {
+		util_copy("/multiboot/res/twrp_curtain.jpg",
+			  "/res/images/curtain.jpg", false, false);
+	}
 	// ==== disable dualboot tools ====
 	// dualboot_init
 	snprintf(buf, ARRAY_SIZE(buf), "/init.%s.rc", data->hw_name);
