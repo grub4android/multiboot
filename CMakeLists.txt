@@ -38,7 +38,7 @@ set_property(TARGET init PROPERTY INCLUDE_DIRECTORIES
 	${TRACY_BIN_DIR}/include
 	${SELINUX_SRC_DIR}/include
 	${CMAKE_SOURCE_DIR}/include
-	${CMAKE_SOURCE_DIR}/lib/libblkid
+	${CMAKE_SOURCE_DIR}/lib/libblkid/include
 )
 target_link_libraries(init tracy pthread blkid selinux)
 
