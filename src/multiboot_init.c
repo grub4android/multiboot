@@ -120,6 +120,26 @@ static void import_kernel_nv(char *name)
 	if (!strcmp(name, "androidboot.hardware")) {
 		module_data.hw_name = strdup(value);
 	}
+
+	if (!strcmp(name, "multiboot.ums")) {
+		INFO("UMS: %s\n", value);
+		umount("/proc");
+
+		// create script
+		create_ums_script("/sbin/ums.sh", value);
+		chmod("/sbin/ums.sh", 0700);
+
+		// patch init.rc
+		sed_replace("/init.rc",
+			    "s/\\/sbin\\/recovery/\\/sbin\\/ums.sh/g");
+
+		// run init
+		if (run_init(NULL)) {
+			kperror("run_init");
+			exit(1);
+		}
+		return;
+	}
 }
 
 static int load_multiboot_fstab(void)

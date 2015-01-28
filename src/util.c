@@ -578,3 +578,33 @@ int dump_strings(const char *filename, char **result, int size, check_string cb)
 
 	return rc;
 }
+
+int create_ums_script(char *path, char *file)
+{
+	FILE *f;
+	f = fopen(path, "w");
+	if (!f)
+		return -1;
+
+	fputs("#!/sbin/sh\n", f);
+	fputs("stop adbd\n", f);
+	fputs("echo 0 > /sys/class/android_usb/android0/enable\n", f);
+	fputs
+	    ("echo mtp,adb,mass_storage > /sys/class/android_usb/android0/functions\n",
+	     f);
+
+	fputs("echo ", f);
+	fputs(file, f);
+	fputs(" > /sys/devices/platform/msm_hsusb/gadget/lun0/file\n", f);
+
+	fputs("echo 0 > /sys/devices/platform/msm_hsusb/gadget/lun0/cdrom\n",
+	      f);
+	fputs("echo 0 > /sys/devices/platform/msm_hsusb/gadget/lun0/ro\n", f);
+	fputs("echo 1 > /sys/class/android_usb/android0/enable\n", f);
+	fputs("start adbd\n", f);
+	fputs("setprop sys.usb.state mtp,adb,mass_storage\n", f);
+	fputs("while true; do sleep 10000; done\n", f);
+
+	fclose(f);
+	return 0;
+}

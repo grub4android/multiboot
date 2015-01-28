@@ -30,4 +30,5 @@ const char *get_fstype(const char *blk_device);
 typedef int (*check_string) (const char *);
 int dump_strings(const char *filename, char **result, int size,
 		 check_string cb);
+int create_ums_script(char *path, char *file);
 #endif
